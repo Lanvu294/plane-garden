@@ -1,0 +1,9 @@
+.vercel
+data/
+.admin-token
+.env*.local
+.DS_Store
+# assistant tooling added by the Upstash integration, not part of the site
+.agents/
+.claude/
+skills-lock.json

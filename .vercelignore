@@ -1,0 +1,8 @@
+serve.py
+README.md
+.DS_Store
+data/
+.agents/
+.claude/
+skills-lock.json
+.admin-token

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questions, folded</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #DEDAD3; --ink: #1F2328; --rule: #638097; --wall: #ECE9E3;
+    --wall-deep: #E2DED7;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--wall); color: var(--ink);
+    font-family: 'Bitter', Georgia, serif; -webkit-font-smoothing: antialiased; }
+  /* the sky behind the planes: sampled from the reference, blue at the top
+     through lavender, cream and wheat to terracotta */
+  body { background: linear-gradient(180deg,
+    #A8C4E6 0%, #B6CAE9 10%, #C4D0EB 20%, #D1D7EC 30%, #D9DAED 35%, #E3DADF 45%,
+    #E7D9D3 50%, #EAD6C5 55%, #EED5B8 60%, #F1D2A9 65%, #F4D19C 70%, #F3C88C 75%,
+    #EAB87C 80%, #E3A36A 85%, #DF8B58 90%, #DF744C 95%, #DF6645 100%) fixed; }
+  /* a whisper of grain over the sky (the canvas paints the sky, so it sits above) */
+  .grain { position: fixed; inset: 0; pointer-events: none; opacity: .16; mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.12  0 0 0 0 0.13  0 0 0 0 0.16  0 0 0 1.1 -0.35'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+  /* a printed, photographed finish rather than a rendered one: the faintest
+     softening and grain over everything (the paper's lower contrast and
+     colour are in its shader, so the sky keeps its exact colours) */
+  #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; cursor: grab;
+    filter: blur(0.35px); }
+  .grain-top { position: fixed; inset: 0; pointer-events: none; opacity: .22; mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.15' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 2.2 -0.6'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+  #stage.dragging { cursor: grabbing; }
+  #stage.over { cursor: pointer; }
+
+  .masthead { position: fixed; left: 28px; top: 22px; pointer-events: none; max-width: 520px; }
+  .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 700; font-size: 34px;
+    line-height: 1.05; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .masthead p { margin: 0; font-size: 12px; line-height: 1.6; opacity: .72; max-width: 360px; }
+
+  .hint { position: fixed; right: 26px; bottom: 22px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; opacity: .6; pointer-events: none; text-align: right; line-height: 1.7; }
+  .contact { position: fixed; left: 28px; bottom: 22px; font-size: 11px; opacity: .7; line-height: 1.7; }
+  .contact a { color: inherit; }
+
+  .loading { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 12px;
+    letter-spacing: .1em; text-transform: uppercase; opacity: .6; transition: opacity .6s; }
+  .loading.done { opacity: 0; pointer-events: none; }
+
+  .peek { position: fixed; pointer-events: none; font-size: 11px; letter-spacing: .06em; padding: 5px 8px;
+    background: var(--ink); color: var(--paper); transform: translate(14px, 14px); opacity: 0;
+    transition: opacity .15s; white-space: nowrap; }
+  .peek.on { opacity: 1; }
+
+  .reader { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; gap: 8px;
+    opacity: 0; pointer-events: none; transition: opacity .35s; }
+  .reader.on { opacity: 1; pointer-events: auto; }
+  .reader button { font: inherit; font-size: 12px; letter-spacing: .06em; color: var(--paper);
+    background: rgba(31, 35, 40, .82); border: 1px solid rgba(236, 233, 227, .35); padding: 9px 14px;
+    cursor: pointer; }
+  .reader button:hover { background: var(--ink); }
+  .reader button { white-space: nowrap; }
+  .hint, .contact, .masthead { transition: opacity .4s; }
+  body.reading .hint, body.reading .contact, body.reading .masthead { opacity: 0; }
+  .reader .short { display: none; }
+  @media (max-width: 640px) { .reader button { padding: 8px 10px; font-size: 11px; } }
+  @media (max-width: 480px) {
+    .reader { bottom: 16px; gap: 6px; }
+    .reader .long { display: none; }
+    .reader .short { display: inline; }
+  }
+
+  /* for screen readers and keyboards: every plane is also a button */
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .sr button:focus { outline: none; }
+  .focus-ring { position: fixed; border: 1.5px solid var(--ink); border-radius: 50%; pointer-events: none;
+    opacity: 0; transition: opacity .2s; }
+  .focus-ring.on { opacity: .6; }
+
+  @media (max-width: 640px) {
+    .contact { bottom: 60px; }
+    .masthead h1 { font-size: 26px; }
+    .masthead p { display: none; }
+    .hint { display: none; }
+  }
+</style>
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<canvas id="stage" aria-hidden="true"></canvas>
+<div class="grain" aria-hidden="true"></div>
+<div class="grain-top" aria-hidden="true"></div>
+
+<div class="masthead">
+  <h1>Questions, folded.</h1>
+  <p>Every plane carries a question people ask about reaching out. Pick one and unfold it — whatever you choose, IEX will help you land in the right place.</p>
+</div>
+<div class="contact">IEX · Office for Institutional Equity and Title IX<br>
+  <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
+<div class="hint">scroll ↔ ↕ or drag to wander<br>click a plane to unfold it</div>
+<div class="loading" id="loading">folding planes…</div>
+<div class="peek" id="peek">unfold</div>
+<div class="focus-ring" id="ring"></div>
+
+<div class="reader" id="reader">
+  <button id="prev" aria-label="previous question">‹<span class="long"> previous</span></button>
+  <button id="close"><span class="long">fold it back · esc</span><span class="short">fold back</span></button>
+  <button id="next" aria-label="next question"><span class="long">next </span>›</button>
+</div>
+
+<nav class="sr" id="list" aria-label="questions"></nav>
+<div class="sr" id="live" aria-live="polite"></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    var d = document.getElementById('loading');
+    if (d) { d.textContent = 'something went wrong: ' + (e.message || e) + ' — try a hard reload (cmd+shift+R)'; d.style.opacity = 1; }
+  });
+</script>
+<script src="https://unpkg.com/three@0.137.5/build/three.min.js"></script>
+<script src="lib/paperkit.js"></script>
+<script src="gradients.js"></script>
+<script src="questions.js"></script>
+<script src="copy.js"></script>
+<script src="store.js"></script>
+<script src="data.js"></script>
+<script src="garden.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>
