@@ -65,6 +65,27 @@
   renderer.setClearColor(0x000000, 0);
   renderer.autoClear = false;
   var ANISO = renderer.capabilities.getMaxAnisotropy();
+  /* The paper blends by a constant: its own opacity, set just before each
+     piece is drawn. three r137 has no constant blend factors, so the paper
+     material asks for a combination nothing else uses (SRC_ALPHA_SATURATE
+     as its source) and it is swapped for the constant here. The material's
+     blend state never changes; only the constant does, per draw. */
+  (function () {
+    var g = renderer.getContext(), bfs = g.blendFuncSeparate.bind(g);
+    g.blendFuncSeparate = function (sr, dr, sa, da) {
+      if (sr === g.SRC_ALPHA_SATURATE) { sr = g.CONSTANT_ALPHA; dr = g.ONE_MINUS_CONSTANT_ALPHA; }
+      bfs(sr, dr, sa, da);
+    };
+  })();
+  /* the opaque pass is the threads, then the paper back to front, so a
+     plane that is fading shows what is behind it rather than the sky */
+  renderer.setOpaqueSort(function (a, b) {
+    var ta = a.object.userData.thread ? 0 : 1, tb = b.object.userData.thread ? 0 : 1;    // threads first: always behind
+    return a.groupOrder - b.groupOrder || ta - tb || b.z - a.z || a.renderOrder - b.renderOrder || a.id - b.id;
+  });
+  function paperBlend(r, sc, cam, geo, mat) {
+    renderer.getContext().blendColor(0, 0, 0, mat.userData.fade ? mat.userData.fade.value : 1);
+  }
 
   var wall = new T.Scene(), stage = new T.Scene();
   /* lit so a face turned to the light shows the paper's own colour and no
@@ -140,7 +161,7 @@
   };
   /* the same sky as the page, fixed to the screen — drawn as its own quad so
      the intro can bring it up from a paler, washed-out version */
-  var skyWash = { value: 0.35 };
+  var skyWash = { value: 0 };
   var bgScene = new T.Scene(), bgCam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   bgScene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.ShaderMaterial({
     uniforms: { map: HAZE.skyMap, wash: skyWash }, depthTest: false, depthWrite: false,
@@ -173,37 +194,53 @@
      ink and paper took up colour unevenly (a few octaves of smooth noise,
      scaled up from tiny random canvases), and short pale and dark fibres.
      `seed` makes every sheet its own. */
+  /* The overlays that every sheet shares — fibres, grain, the cut edge —
+     are drawn once into a few variants and stamped on (drawImage is cheap;
+     drawing hundreds of strokes and reading pixels back, per sheet, was
+     most of the loading time). Variant by seed, so neighbours differ. */
+  var LAYER_VARIANTS = 4, layerCache = {};
+  function layer(key, W, H, draw) {
+    if (layerCache[key]) return layerCache[key];
+    var cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    draw(cv.getContext('2d'));
+    return (layerCache[key] = cv);
+  }
+  function variantOf(seed) { return ((Math.round(seed) % LAYER_VARIANTS) + LAYER_VARIANTS) % LAYER_VARIANTS; }
   function paperSurface(c, W, H, ppi, seed, strength) {
-    var s2 = seed * 9301 + 49297;
+    var v = variantOf(seed), s2 = (v + 1) * 9301 + 49297;
     function r() { s2 = (s2 * 16807) % 2147483647; return s2 / 2147483647; }
     c.save();
     c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
     [[4, 0.07], [9, 0.05], [20, 0.03]].forEach(function (oct) {
       var n = oct[0], m = Math.max(2, Math.round(n * H / W));
-      var t = document.createElement('canvas'); t.width = n; t.height = m;
-      var tc = t.getContext('2d'), id = tc.createImageData(n, m);
-      for (var k = 0; k < n * m; k++) {
-        var v = Math.round(r() * 255);
-        id.data[k * 4] = id.data[k * 4 + 1] = id.data[k * 4 + 2] = v; id.data[k * 4 + 3] = 255;
-      }
-      tc.putImageData(id, 0, 0);
+      var t = layer('oct' + n + 'x' + m + ':' + v, n, m, function (tc) {
+        var id = tc.createImageData(n, m);
+        for (var k = 0; k < n * m; k++) {
+          var q = Math.round(r() * 255);
+          id.data[k * 4] = id.data[k * 4 + 1] = id.data[k * 4 + 2] = q; id.data[k * 4 + 3] = 255;
+        }
+        tc.putImageData(id, 0, 0);
+      });
       c.globalCompositeOperation = 'overlay';
       c.globalAlpha = oct[1] * strength * 4;
       c.drawImage(t, 0, 0, W, H);
     });
-    /* fibres */
     c.globalCompositeOperation = 'source-over';
-    c.lineCap = 'round';
-    var count = Math.round(W * H / (ppi * ppi) * 9 * strength);
-    for (var i = 0; i < count; i++) {
-      var x = r() * W, y = r() * H, L = (0.03 + r() * 0.09) * ppi, a = r() * Math.PI * 2;
-      c.strokeStyle = r() < 0.55 ? 'rgba(255,255,255,0.22)' : 'rgba(60,50,40,0.14)';
-      c.lineWidth = Math.max(0.5, 0.006 * ppi);
-      c.beginPath(); c.moveTo(x, y);
-      c.quadraticCurveTo(x + Math.cos(a) * L * 0.5 + (r() - 0.5) * L * 0.4, y + Math.sin(a) * L * 0.5,
-                         x + Math.cos(a) * L, y + Math.sin(a) * L);
-      c.stroke();
-    }
+    c.globalAlpha = 1;
+    /* fibres */
+    c.drawImage(layer('fib' + W + 'x' + H + ':' + ppi + ':' + strength + ':' + v, W, H, function (fc) {
+      fc.lineCap = 'round';
+      var count = Math.round(W * H / (ppi * ppi) * 9 * strength);
+      for (var i = 0; i < count; i++) {
+        var x = r() * W, y = r() * H, L = (0.03 + r() * 0.09) * ppi, a = r() * Math.PI * 2;
+        fc.strokeStyle = r() < 0.55 ? 'rgba(255,255,255,0.22)' : 'rgba(60,50,40,0.14)';
+        fc.lineWidth = Math.max(0.5, 0.006 * ppi);
+        fc.beginPath(); fc.moveTo(x, y);
+        fc.quadraticCurveTo(x + Math.cos(a) * L * 0.5 + (r() - 0.5) * L * 0.4, y + Math.sin(a) * L * 0.5,
+                            x + Math.cos(a) * L, y + Math.sin(a) * L);
+        fc.stroke();
+      }
+    }), 0, 0);
     c.restore();
   }
   /* A crease pressed into paper is not a line of ink, and it is not even:
@@ -261,7 +298,7 @@
   }
   /* the cut edge of the stock: a faint, slightly uneven rim, so the sheet's
      silhouette is paper rather than a perfect vector cut */
-  function cutEdge(c, W, H, ppi, seed) {
+  function cutEdgeDraw(c, W, H, ppi, seed) {
     /* the paper falls off a touch toward its own edges, as a real sheet does */
     var band = 0.35 * ppi;
     c.save();
@@ -291,6 +328,10 @@
     });
     c.restore();
   }
+  function cutEdge(c, W, H, ppi, seed) {
+    var v = variantOf(seed);
+    c.drawImage(layer('edge' + W + 'x' + H + ':' + ppi + ':' + v, W, H, function (ec) { cutEdgeDraw(ec, W, H, ppi, v + 1); }), 0, 0);
+  }
   /* every sheet a slightly different tone — no two pieces of stock match */
   function tone(base, seed) {
     var col = new T.Color(base), hsl = {};
@@ -301,16 +342,16 @@
     return '#' + col.getHexString();
   }
   function grain(c, W, H, amt, seed) {
-    var img = c.getImageData(0, 0, W, H), d = img.data, s = seed || 1;
-    for (var i = 0; i < d.length; i += 4) {
-      s = (s * 16807) % 2147483647;
-      var v = s / 2147483647;
-      if (v > 0.5) {
-        var a = (v - 0.5) * 2 * amt;
-        d[i] = d[i] * (1 - a) + 31 * a; d[i + 1] = d[i + 1] * (1 - a) + 35 * a; d[i + 2] = d[i + 2] * (1 - a) + 40 * a;
+    var vr = variantOf(seed);
+    c.drawImage(layer('grain' + W + 'x' + H + ':' + amt + ':' + vr, W, H, function (gc) {
+      var img = gc.createImageData(W, H), d = img.data, s = vr * 7 + 1;
+      for (var i = 0; i < d.length; i += 4) {
+        s = (s * 16807) % 2147483647;
+        var v = s / 2147483647;
+        if (v > 0.5) { d[i] = 31; d[i + 1] = 35; d[i + 2] = 40; d[i + 3] = Math.round((v - 0.5) * 2 * amt * 255); }
       }
-    }
-    c.putImageData(img, 0, 0);
+      gc.putImageData(img, 0, 0);
+    }), 0, 0);
   }
   /* notebook ruling across the whole sheet: one line every RULE_PITCH inches
      from just over an inch down, the same on both faces */
@@ -407,7 +448,18 @@
   function paperMaterial(front, back) {
     /* double-sided, with an explicit front (the cream, printed side) and back
        (the gradient), chosen per pixel by which face is towards the eye */
-    var m = new T.MeshLambertMaterial({ map: front, side: T.DoubleSide, vertexColors: true, alphaToCoverage: true });
+    /* Fixed for its whole life — never toggled. An opaque sheet (drawn back
+       to front, see the opaque sort), with the cut edge's feather going
+       through alpha-to-coverage (order-free) and the plane's overall opacity
+       through a constant blend, set per draw (see paperBlend). At full
+       opacity that is exactly an opaque sheet. Not `transparent`: three
+       draws a transparent double-sided material twice, a side at a time,
+       and on the back pass the shader takes back faces for fronts — every
+       sheet would show its printed side and none of its colour. */
+    var m = new T.MeshLambertMaterial({ map: front, side: T.DoubleSide, vertexColors: true, alphaToCoverage: true,
+      transparent: false, blending: T.CustomBlending,
+      blendSrc: T.SrcAlphaSaturateFactor, blendDst: T.OneMinusSrcAlphaFactor,      // marks it: see paperBlend
+      blendSrcAlpha: T.OneFactor, blendDstAlpha: T.OneMinusSrcAlphaFactor });
     m.userData.backMap = { value: back };
     /* how much the cut edge feathers: on for hanging planes and for the
        sheet once it lies flat; off while a sheet is folding, where flaps
@@ -418,30 +470,24 @@
        lifted it is (hi), and for a waiting plane how much of its colour has
        bled in (bleed: 0 plain cream, 1 its gradient) */
     m.userData.dim = { value: 0 };
-    m.userData.haze = { value: 0 };          // focus pull: another plane is caught
-    m.userData.occl = { value: 0 };          // in front of the caught plane: see through
-    m.userData.glint = { value: -1 };        // a sheen running along the creases (-1: none)
-    m.userData.creaseMap = { value: null };
-    m.userData.fade = { value: 1 };          // overall opacity: the intro's arrival, and behind the title
+    m.userData.fade = { value: 1 };          // overall opacity (the blend constant): arrival, behind the title, filtered out
+    m.userData.flex = { value: 0 };          // the wing breath: how far the wings flex, radians at the tip
     m.userData.bleed = { value: 1 };
     m.userData.creamMap = { value: back };
     m.onBeforeCompile = function (sh) {
       sh.uniforms.backMap = m.userData.backMap;
       sh.uniforms.feather = m.userData.feather;
       sh.uniforms.dimAmt = m.userData.dim;
-      sh.uniforms.hazeAmt = m.userData.haze;
-      sh.uniforms.occlAmt = m.userData.occl;
-      sh.uniforms.glintPos = m.userData.glint;
-      sh.uniforms.creaseMap = m.userData.creaseMap;
-      sh.uniforms.fade = m.userData.fade;
+      sh.uniforms.flexAmt = m.userData.flex;
       sh.uniforms.bleed = m.userData.bleed;
       sh.uniforms.creamMap = m.userData.creamMap;
       sh.uniforms.camNear = CAM_NEAR; sh.uniforms.camFar = CAM_FAR;
       for (var k in HAZE) sh.uniforms[k] = HAZE[k];        // shared: one update reaches every plane
-      sh.vertexShader = 'attribute vec2 rank;\nvarying vec2 vRank;\nvarying vec3 vViewP;\n' +
-        sh.vertexShader.replace('#include <project_vertex>',
+      sh.vertexShader = 'attribute vec2 rank;\nattribute vec3 wflex;\nuniform float flexAmt;\nvarying vec2 vRank;\nvarying vec3 vViewP;\n' +
+        sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  transformed += wflex * flexAmt;')
+        .replace('#include <project_vertex>',
         '#include <project_vertex>\n  vViewP = - mvPosition.xyz;\n  vRank = rank;');
-      sh.fragmentShader = 'uniform sampler2D backMap, creamMap, creaseMap;\nuniform float feather, camNear, camFar, dimAmt, hazeAmt, occlAmt, glintPos, bleed, fade;\nvarying vec2 vRank;\n#define RANK_STEP 0.0004\n' +
+      sh.fragmentShader = 'uniform sampler2D backMap, creamMap;\nuniform float feather, camNear, camFar, dimAmt, bleed;\nvarying vec2 vRank;\n#define RANK_STEP 0.0004\n' +
         'uniform sampler2D skyMap;\nuniform float viewH, hazeNear, hazeFar, hazeAmount, nearFrom, nearTo;\n' +
         'uniform vec3 mist, glow;\nuniform float ambience;\nvarying vec3 vViewP;\n' + sh.fragmentShader
         .replace('#include <map_fragment>',
@@ -451,7 +497,7 @@
           '  float viewD = 1.0 / gl_FragCoord.w;\n' +
           '  float farT = smoothstep( hazeNear, hazeFar, viewD );\n' +
           /* a plane filtered out of view recedes: softer, as if through haze */
-          '  float detailBias = farT * 3.0 + dimAmt * 2.5 + hazeAmt * 0.7;\n' +
+          '  float detailBias = farT * 3.0 + dimAmt * 2.5;\n' +
           '#ifdef USE_MAP\n' +
           '  vec4 texelColor;\n' +
           '  if ( gl_FrontFacing ) texelColor = texture2D( map, vUv, detailBias );\n' +
@@ -511,18 +557,6 @@
              photographed page (only the paper; the sky stays as specified) */
           '  col = ( col - 0.5 ) * 0.94 + 0.5;\n' +
           '  col = mix( vec3( dot( col, vec3( 0.2126, 0.7152, 0.0722 ) ) ), col, 0.9 );\n' +
-          /* focus pull: when another plane is caught, this one goes a little
-             softer — about a tenth less colour and contrast, a breath of sky */
-          '  float lhz = dot( col, vec3( 0.299, 0.587, 0.114 ) );\n' +
-          '  col = mix( col, mix( vec3( lhz ), col, 0.9 ), hazeAmt );\n' +
-          '  col = mix( col, ( col - 0.5 ) * 0.91 + 0.5 + ( skyHere - 0.5 ) * 0.03, hazeAmt );\n' +
-          /* the crease glint: one slow warm sheen running nose to tail along
-             the folds, like light catching creased paper */
-          '  if ( glintPos > -0.5 ) {\n' +
-          '    float cm = texture2D( creaseMap, vUv ).r;\n' +
-          '    float band = exp( -pow( ( vUv.y - glintPos ) / 0.09, 2.0 ) );\n' +
-          '    col += vec3( 1.0, 0.97, 0.9 ) * cm * band * 0.32;\n' +
-          '  }\n' +
           /* filtered out: grey, and washed toward the sky behind */
           '  float ldim = dot( col, vec3( 0.299, 0.587, 0.114 ) );\n' +
           '  col = mix( col, mix( vec3( ldim ), skyHere * 1.02, 0.55 ), dimAmt * 0.8 );\n' +
@@ -536,7 +570,6 @@
           '  float along = ed.x < ed.y ? vUv.y : vUv.x;\n' +
           '  float soft = 1.4 + 0.7 * sin( along * 61.0 + sin( along * 23.0 ) * 2.0 );\n' +
           '  gl_FragColor.a *= mix( 1.0, smoothstep( 0.0, soft, min( ed.x, ed.y ) ), feather );\n' +
-          '  gl_FragColor.a *= ( 1.0 - 0.85 * dimAmt ) * ( 1.0 - 0.45 * occlAmt ) * fade;\n' +
           /* pieces lying flat on each other: the one higher in the stack (as
              seen from this face's side) is drawn as if a hair nearer —
              RANK_STEP world units along the line of sight per place in the
@@ -584,13 +617,168 @@
       g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
       g.setAttribute('color', new T.Float32BufferAttribute(new Float32Array(pos.count * 3).fill(1), 3));
       g.setAttribute('rank', new T.Float32BufferAttribute(new Float32Array(pos.count * 2), 2));
+      g.setAttribute('wflex', new T.Float32BufferAttribute(new Float32Array(pos.count * 3), 3));
       r.mesh.material = mat;
+      r.mesh.onBeforeRender = paperBlend;
       r.mesh.userData.plane = p;
       pickables.push(r.mesh);
     });
     rig.setProgress(1);
     setRanks(p, rig.folds.length);                       // the finished plane's stack
     rig.root.updateMatrixWorld(true);
+    wingSetup(p, rig);
+    rig.regions.forEach(function (r) { shadowGroups(r.mesh.geometry); });
+    /* hidden from the start: only the intro (or a launch) brings it in */
+    mat.userData.fade.value = p.appear == null ? 1 : p.appear;
+    rig.root.visible = mat.userData.fade.value > 0.004;
+  }
+
+  /* ------------------------------------------------------- the wing breath
+     When a plane is caught its wings take a small updraft: both wing creases
+     open a few degrees more (a bigger dihedral), through the same crease
+     rotations the unfold uses, while the paper beyond them flexes up a
+     touch more toward the tips, a beat behind, so it reads as paper rather
+     than a hinge. Built once per plane: which creases are the wings, which
+     way of turning each lifts it (away from the keel), and for every point
+     on a wing how it moves when the wing flexes. The wing pieces are cut
+     finer so there is something to bend. */
+  var WING = { peak: 7, rest: 2.5, lift: 0.28, settle: 0.5, breathe: 1, period: 2.5,
+               flex: 2, flexLag: 0.06, out: 0.4 };          // degrees and seconds
+  function subdivide(g, levels) {
+    var pos = g.attributes.position, idx = g.index ? g.index.array : null;
+    var tris = [], n = idx ? idx.length : pos.count;
+    for (var i = 0; i < n; i += 3) {
+      var t = [];
+      for (var j = 0; j < 3; j++) { var v = idx ? idx[i + j] : i + j; t.push([pos.getX(v), pos.getY(v), pos.getZ(v)]); }
+      tris.push(t);
+    }
+    function mid(a, b) { return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]; }
+    for (var l = 0; l < levels; l++) {
+      var next = [];
+      tris.forEach(function (t) {
+        var ab = mid(t[0], t[1]), bc = mid(t[1], t[2]), ca = mid(t[2], t[0]);
+        next.push([t[0], ab, ca], [ab, t[1], bc], [ca, bc, t[2]], [ab, bc, ca]);
+      });
+      tris = next;
+    }
+    var out = new Float32Array(tris.length * 9), k = 0;
+    tris.forEach(function (t) { t.forEach(function (v) { out[k++] = v[0]; out[k++] = v[1]; out[k++] = v[2]; }); });
+    var ng = new T.BufferGeometry();
+    ng.setAttribute('position', new T.Float32BufferAttribute(out, 3));
+    ng.computeVertexNormals();
+    return ng;
+  }
+  function wingSetup(p, rig) {
+    var wings = [];
+    rig.folds.forEach(function (f, k) { if (f.isWing) wings.push(k); });
+    var rest = rig.getAngles(), half = rig.getHalfAngle(), signs = [];
+    var mPre = new T.Matrix4(), mInv = new T.Matrix4(), q = new T.Vector3(), d = new T.Vector3(), w0 = new T.Vector3(), w1 = new T.Vector3();
+    wings.forEach(function (k) {
+      /* which way of turning lifts the wing: nudge it and see whether its
+         far edge rises (the plane's up is +y here, the keel below) */
+      var before = [];
+      rig.regions.forEach(function (r) {
+        if (r.folds.indexOf(k) < 0) return;
+        var pa = r.mesh.geometry.attributes.position;
+        for (var v = 0; v < pa.count; v++) before.push({ r: r, v: v, w: new T.Vector3().fromBufferAttribute(pa, v).applyMatrix4(r.mesh.matrixWorld) });
+      });
+      var a = rest.slice(); a[k] += 0.05; rig.setAngles(a, half); rig.root.updateMatrixWorld(true);
+      var dy = 0, moved = -1;
+      before.forEach(function (o) {
+        w1.fromBufferAttribute(o.r.mesh.geometry.attributes.position, o.v).applyMatrix4(o.r.mesh.matrixWorld);
+        var m = w1.distanceTo(o.w);
+        if (m > moved) { moved = m; dy = w1.y - o.w.y; }
+      });
+      signs.push(dy > 0 ? 1 : -1);
+      rig.setAngles(rest, half); rig.root.updateMatrixWorld(true);
+    });
+    /* the flex: every point on a wing moves the way the wing turns, by an
+       amount growing with the square of its distance from the crease (so the
+       paper curves), expressed in the piece's own flat frame */
+    rig.regions.forEach(function (r) {
+      var wi = -1;
+      for (var j = 0; j < wings.length; j++) if (r.folds.indexOf(wings[j]) >= 0) wi = j;
+      if (wi < 0) return;
+      var k = wings[wi], f = rig.folds[k], at = r.folds.indexOf(k);
+      var g = subdivide(r.mesh.geometry, 2), old = r.mesh.geometry;
+      /* the same attributes, on the finer mesh: uvs from where each point
+         is on the sheet; tone and stacking rank are one per piece */
+      ['uv', 'color', 'rank', 'wflex'].forEach(function (name) {
+        var src = old.attributes[name]; if (!src) return;
+        var cnt = g.attributes.position.count, arr = new Float32Array(cnt * src.itemSize);
+        for (var v = 0; v < cnt; v++) for (var c = 0; c < src.itemSize; c++) arr[v * src.itemSize + c] = name === 'wflex' ? 0 : src.array[c];
+        g.setAttribute(name, new T.Float32BufferAttribute(arr, src.itemSize));
+      });
+      var gp = g.attributes.position, uv = g.attributes.uv;
+      for (var v = 0; v < gp.count; v++) uv.setXY(v, gp.getX(v) / p.sheet.w + 0.5, gp.getY(v) / p.sheet.h + 0.5);
+      r.mesh.geometry = g; old.dispose();
+      mPre.identity();
+      for (var n = 0; n < at; n++) mPre.premultiply(r.nodes[n].g.matrix);
+      mInv.copy(mPre).invert();
+      var piv = new T.Vector3(f.pivotV.x, f.pivotV.y, 0), axis = f.axisV.clone().normalize();
+      var fl = g.attributes.wflex, dist = [], dirs = [], D = 1e-6;
+      for (v = 0; v < gp.count; v++) {
+        q.fromBufferAttribute(gp, v).applyMatrix4(mPre).sub(piv);
+        d.crossVectors(axis, q);                         // how it moves per radian of the wing crease
+        var len = d.length(); dist.push(len); D = Math.max(D, len);
+        dirs.push(d.clone().transformDirection(mInv).multiplyScalar(len));
+      }
+      r.flexD = D; r.flexWing = wi; r.flexDirs = dirs; r.flexDist = dist;
+    });
+    /* one scale per wing (its own span), so both tips flex by the same angle */
+    var span = wings.map(function () { return 1e-6; });
+    rig.regions.forEach(function (r) { if (r.flexDirs) span[r.flexWing] = Math.max(span[r.flexWing], r.flexD); });
+    rig.regions.forEach(function (r) {
+      if (!r.flexDirs) return;
+      var fl = r.mesh.geometry.attributes.wflex, D = span[r.flexWing], sg = signs[r.flexWing];
+      r.flexDirs.forEach(function (dv, v) { fl.setXYZ(v, dv.x * sg / (2 * D), dv.y * sg / (2 * D), dv.z * sg / (2 * D)); });
+      delete r.flexDirs; delete r.flexDist;
+    });
+    p.wings = { folds: wings, signs: signs, rest: rest, half: half };
+    p.wb = { on: false, t0: 0, t1: 0, v0: 0, f0: 0, v1: 0, f1: 0, val: 0, flex: 0, set: false };
+  }
+  function easeOut3(x) { return 1 - Math.pow(1 - x, 3); }
+  function easeInOut3(x) { return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; }
+  function breathIn(p, now) { var b = p.wb; if (!b) return; b.on = true; b.t0 = now; b.v0 = b.val; b.f0 = b.flex; }
+  function breathOut(p, now) { var b = p.wb; if (!b) return; b.on = false; b.t1 = now; b.v1 = b.val; b.f1 = b.flex; }
+  /* the wings' extra lift (degrees) and flex, from the moment of the catch;
+     from wherever they are, so a quick away-and-back never snaps */
+  function wingBreath(p, now) {
+    var b = p.wb; if (!b) return;
+    if (b.on) {
+      var tau = (now - b.t0) / 1000, W = WING;
+      if (tau < W.lift) b.val = b.v0 + (W.peak - b.v0) * easeOut3(tau / W.lift);
+      else if (tau < W.lift + W.settle) b.val = W.peak + (W.rest - W.peak) * easeInOut3((tau - W.lift) / W.settle);
+      else {
+        var tb = tau - W.lift - W.settle;
+        b.val = W.rest + W.breathe * Math.sin(2 * Math.PI * tb / W.period) * smooth(0, 1.2, tb);
+      }
+      var tf = tau - W.flexLag;
+      if (tf < 0) b.flex = b.f0;
+      else if (tf < W.lift) b.flex = b.f0 + (W.flex - b.f0) * easeOut3(tf / W.lift);
+      else if (tf < W.lift + W.settle) b.flex = W.flex * (1 - easeInOut3((tf - W.lift) / W.settle));
+      else b.flex = 0;
+    } else {
+      var ko = easeInOut3(Math.min(1, (now - b.t1) / 1000 / WING.out));
+      b.val = b.v1 * (1 - ko); b.flex = b.f1 * (1 - ko);
+    }
+  }
+  var _wa = [];
+  function applyWings(p) {
+    var b = p.wb, w = p.wings; if (!b || !w) return;
+    var u = p.mats[0].userData;
+    if (Math.abs(b.val) < 1e-3 && Math.abs(b.flex) < 1e-3) {
+      if (b.set) { p.rig.setAngles(w.rest, w.half); b.set = false; u.flex.value = 0; }
+      b.val = 0; b.flex = 0;
+      return;
+    }
+    _wa.length = 0;
+    for (var i = 0; i < w.rest.length; i++) _wa.push(w.rest[i]);
+    var a = b.val * Math.PI / 180;
+    for (var j = 0; j < w.folds.length; j++) _wa[w.folds[j]] += w.signs[j] * a;
+    p.rig.setAngles(_wa, w.half);
+    u.flex.value = b.flex * Math.PI / 180;
+    b.set = true;
   }
   function newRig(model) {
     return PK.createPlaneRig({
@@ -599,16 +787,25 @@
       paperMaterial: new T.MeshLambertMaterial(), lineMaterial: creaseMat
     });
   }
-  /* a thread: it thins out where it passes behind the title, so the words
-     always read (TEXT_RECT is the title block, in device pixels) */
-  var TEXT_RECT = { value: new T.Vector4(-1, -1, -1, -1) };
+  /* a thread: always behind every plane (drawn first, writing no depth, so
+     paper always covers it), and thinning out where it passes behind the
+     words — the title, the footer, the hint (TEXT_RECTS, device pixels) —
+     so they always read */
+  var TEXT_RECTS = { value: [new T.Vector4(-1e4, -1e4, -1e4, -1e4), new T.Vector4(-1e4, -1e4, -1e4, -1e4), new T.Vector4(-1e4, -1e4, -1e4, -1e4)] };
   function stringMaterial(opacity) {
-    var m = new T.LineBasicMaterial({ color: 0x1f2328, transparent: true, opacity: opacity });
+    var m = new T.LineBasicMaterial({ color: 0x1f2328, opacity: opacity, transparent: false, depthWrite: false,
+      blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: T.OneMinusSrcAlphaFactor });
     m.onBeforeCompile = function (sh) {
-      sh.uniforms.textRect = TEXT_RECT;
-      sh.fragmentShader = 'uniform vec4 textRect;\n' + sh.fragmentShader.replace('#include <premultiplied_alpha_fragment>',
+      sh.uniforms.textRect = TEXT_RECTS;
+      /* not `transparent` (so it draws in the first pass, behind the paper),
+         but it keeps its own faint alpha: three forces 1 on opaque materials */
+      sh.fragmentShader = '#undef OPAQUE\nuniform vec4 textRect[ 3 ];\n' + sh.fragmentShader.replace('#include <premultiplied_alpha_fragment>',
         '  vec2 fq = gl_FragCoord.xy;\n' +
-        '  float dq = max( max( textRect.x - fq.x, fq.x - textRect.z ), max( textRect.y - fq.y, fq.y - textRect.w ) );\n' +
+        '  float dq = 1e4;\n' +
+        '  for ( int k = 0; k < 3; k ++ ) {\n' +
+        '    vec4 tr = textRect[ k ];\n' +
+        '    dq = min( dq, max( max( tr.x - fq.x, fq.x - tr.z ), max( tr.y - fq.y, fq.y - tr.w ) ) );\n' +
+        '  }\n' +
         '  gl_FragColor.a *= 1.0 - 0.78 * ( 1.0 - smoothstep( 0.0, 36.0, dq ) );\n' +
         '#include <premultiplied_alpha_fragment>');
     };
@@ -630,27 +827,9 @@
   /* the filter, the catch (hover) and the colour-bleed, eased per plane */
   function fxInit(p) {
     p.fx = { dim: 0, dimT: 0, fwd: 0, fwdT: 0, at: 0,
-             cat: 0, catT: 0, haze: 0, occl: 0, roll: 0, pitch: 0, glint: -1, caught: false };
+             cat: 0, catT: 0, roll: 0, pitch: 0, caught: false };
     var waiting = typeof intro !== 'undefined' && intro.phase !== 'done';
     p.appear = waiting ? 0 : 1; p.threadA = waiting ? 0 : 1; p.cover = 0;
-  }
-  /* where a model's creases are, as a soft mask in sheet space, for the glint */
-  var creaseMaps = {};
-  function creaseMapFor(model, rig, sheet) {
-    if (creaseMaps[model]) return creaseMaps[model];
-    var W = 128, H = Math.round(W * sheet.h / sheet.w), ppi = W / sheet.w;
-    var cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-    var c = cv.getContext('2d');
-    c.fillStyle = '#000'; c.fillRect(0, 0, W, H);
-    c.strokeStyle = '#fff'; c.lineWidth = 2.2; c.lineCap = 'round'; c.filter = 'blur(1.2px)';
-    rig.creasePattern().segs.forEach(function (sg) {
-      if (sg.kind === 'edge') return;
-      c.beginPath();
-      c.moveTo((sg.a[0] + sheet.w / 2) * ppi, (sheet.h / 2 - sg.a[1]) * ppi);
-      c.lineTo((sg.b[0] + sheet.w / 2) * ppi, (sheet.h / 2 - sg.b[1]) * ppi);
-      c.stroke();
-    });
-    return (creaseMaps[model] = new T.CanvasTexture(cv));
   }
   var byI = {};
 
@@ -671,7 +850,6 @@
               front: front, back: back, mats: [mat], hi: null };
     fxInit(p); byI[p.i] = p;
     dressRig(p, rig, sheet, mat);
-    mat.userData.creaseMap.value = creaseMapFor(model, rig, sheet);
     var box = new T.Box3();
     rig.regions.forEach(function (r) { box.expandByObject(r.mesh); });
     var c = box.getCenter(new T.Vector3());
@@ -720,7 +898,9 @@
     var nearness = (z - Z_FAR) / DEPTH;                // 0 farthest .. 1 nearest
     p.stringMat = stringMaterial(0.08 + 0.42 * nearness);
     p.stringOpacity = p.stringMat.opacity;
-    swing.add(new T.Line(sg, p.stringMat));
+    var thread = new T.Line(sg, p.stringMat);
+    thread.userData.thread = true;
+    swing.add(thread);
     wall.add(swing);
 
     /* mostly side-on and three-quarter, a few nose-on, all swaying */
@@ -743,6 +923,7 @@
     p.size = box.getSize(new T.Vector3()).length() * PLANE_SCALE;
     planes.push(p);
     addListButton(p);
+    return p;
   }
 
   /* ---------------------------------------------------- waiting planes
@@ -802,7 +983,6 @@
               mine: mine, sheet: sheet, rig: rig, front: front, back: back, cream: cream, mats: [mat], hi: null };
     fxInit(p); byI[p.i] = p;
     dressRig(p, rig, sheet, mat);
-    mat.userData.creaseMap.value = creaseMapFor(model, rig, sheet);
     p.centerLocal = new T.Vector3();
     var box = new T.Box3();
     rig.regions.forEach(function (r) { box.expandByObject(r.mesh); });
@@ -854,7 +1034,11 @@
     b.addEventListener('focus', function () { if (!openP) { focusPlane(p); setHover(p, 'keyboard'); } });
     b.addEventListener('blur', function () { if (hov.p === p && S.get().hoverSource === 'keyboard') setHover(null); });
     b.addEventListener('click', function () { S.set({ openId: p.qid, openHint: p }); });
-    list.appendChild(b);
+    b.dataset.i = p.i;
+    /* in plane order, though they're folded in the wave's order */
+    var after = null;
+    for (var c = list.firstChild; c; c = c.nextSibling) if (+c.dataset.i > p.i) { after = c; break; }
+    list.insertBefore(b, after);
   }
   var ring = document.getElementById('ring'), focused = null;
   function focusPlane(p) {
@@ -909,9 +1093,20 @@
     if (hit) { setHover(null); activate(hit); }
     else if (S.get().panelOpen) S.set({ panelOpen: false });     // the empty sky puts the panel away
   });
-  canvas.addEventListener('pointerleave', function () {
-    mouse.inside = false;
-    if (hov.p && S.get().hoverSource === 'pointer') setHover(null);
+  /* the hover goes the moment the pointer leaves the sky, the window loses
+     focus, or the panel or a sheet opens */
+  function dropPointerHover() {
+    var src = S.get().hoverSource;
+    hov.cand = null; hov.lost = 0;
+    if (hov.p && (src === 'pointer' || src === 'touch')) setHover(null);
+  }
+  canvas.addEventListener('pointerleave', function () { mouse.inside = false; dropPointerHover(); });
+  window.addEventListener('blur', dropPointerHover);
+  var wasOpen = false;
+  S.subscribe(function (st) {
+    var open = !!(st.panelOpen || st.openId);
+    if (open && !wasOpen) dropPointerHover();
+    wasOpen = open;
   });
   function activate(p) {
     if (p.kind === 'answered') S.set({ openId: p.qid, openHint: p });
@@ -942,16 +1137,14 @@
   var mouse = { x: -1, y: -1, fresh: false, inside: false, kind: 'mouse' };
   var peek = document.getElementById('peek');
   /* the frontmost plane actually under the point (the meshes, not boxes),
-     skipping planes the panel has filtered out and the see-through ones
-     standing in front of a caught plane */
+     skipping planes the panel has filtered out */
   function pick(x, y) {
-    if (introBusy()) return null;
     ndc.set((x / window.innerWidth) * 2 - 1, -(y / window.innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
     var hits = ray.intersectObjects(pickables, false);
     for (var i = 0; i < hits.length; i++) {
       var p = hits[i].object.userData.plane;
-      if (p && p.state !== 'away' && !p.launching && p.fx.dimT < 0.5 && p.fx.occl < 0.5) return p;
+      if (p && p.state !== 'away' && !p.launching && p.fx.dimT < 0.5 && arrived(p)) return p;
     }
     return null;
   }
@@ -959,9 +1152,9 @@
   /* ----------------------------------------------------------- the catch
      Hovering a plane makes it "catch" the cursor, like a paper plane
      catching a breeze: it slows (but drifts on), bobs, banks toward you,
-     lifts a little nearer with a soft shadow behind it, and a sheen runs
-     once along its creases; everything else goes very slightly soft, and
-     anything standing in front of it turns see-through. One plane at a time.
+     lifts a little nearer with a soft shadow behind it that tightens as it
+     rises, and its wings take a small updraft (the wing breath). Nothing
+     else in the sky changes. One plane at a time.
      Four inputs share it — the pointer, a panel row, keyboard focus, a tap —
      and the store says which (hoverSource).
 
@@ -972,7 +1165,7 @@
      cursor rests on it for the same 80 ms; and a plane drifting to the edge
      of the screen or under the panel lets go. */
   var hov = { p: null, cand: null, since: 0, lost: 0, lastPick: 0, blocked: null };
-  var INTENT_MS = 80, GRACE_MS = 150;
+  var INTENT_MS = 80, GRACE_MS = 70;
   function setHover(p, source) {
     if (hov.p === p && (!p || S.get().hoverSource === source)) return;
     hov.p = p; hov.lost = 0;
@@ -990,22 +1183,21 @@
   }
   function placeTag(x, y) { peek.style.left = x + 'px'; peek.style.top = y + 'px'; }
   var _v = new T.Vector3();
-  /* the plane's outline on screen, as a box (from its own vertices) */
-  function outline(p) {
-    var x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, W = window.innerWidth, H = window.innerHeight;
-    p.rig.regions.forEach(function (r) {
-      var pos = r.mesh.geometry.attributes.position;
-      for (var k = 0; k < pos.count; k++) {
-        _v.fromBufferAttribute(pos, k).applyMatrix4(r.mesh.matrixWorld).project(camera);
-        var x = (_v.x + 1) / 2 * W, y = (1 - _v.y) / 2 * H;
-        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
-      }
-    });
-    return { x0: x0, y0: y0, x1: x1, y1: y1 };
-  }
-  function insideOutline(p, x, y, grow) {
-    var b = outline(p), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-    return Math.abs(x - cx) <= (b.x1 - b.x0) / 2 * grow && Math.abs(y - cy) <= (b.y1 - b.y0) / 2 * grow;
+  /* still on it: the cursor over the plane itself, or within 8% of its
+     size of its edge (four probes around the cursor, against its own
+     pieces only) — never the empty sky inside its bounding box */
+  var probeMeshes = [];
+  function nearSilhouette(p, x, y) {
+    var d = disc(p), g = 0.08 * d.r * 2, W = window.innerWidth, H = window.innerHeight;
+    probeMeshes.length = 0;
+    p.rig.regions.forEach(function (r) { probeMeshes.push(r.mesh); });
+    var pts = [[0, 0], [g, 0], [-g, 0], [0, g], [0, -g]];
+    for (var k = 0; k < pts.length; k++) {
+      ndc.set(((x + pts[k][0]) / W) * 2 - 1, -((y + pts[k][1]) / H) * 2 + 1);
+      ray.setFromCamera(ndc, camera);
+      if (ray.intersectObjects(probeMeshes, false).length) return true;
+    }
+    return false;
   }
   function slipping(p) {
     var d = disc(p), W = window.innerWidth, H = window.innerHeight, m = 24, r = S.get().panelOpen && S.get().panelRect;
@@ -1013,7 +1205,7 @@
     return !!(r && d.x > r.left && d.x < r.left + r.width && d.y > r.top && d.y < r.top + r.height);
   }
   function pointerHover(now) {
-    if (introBusy() || openP || dragging || !mouse.inside || mouse.kind === 'touch') return;
+    if (openP || dragging || !mouse.inside || mouse.kind === 'touch') return;
     if (mouse.fresh || now - hov.lastPick > 100) {          // one pick per move (and now and then at rest)
       mouse.fresh = false; hov.lastPick = now;
       var c = pick(mouse.x, mouse.y);
@@ -1025,7 +1217,7 @@
     if (hov.cand && hov.cand !== cur && hov.cand !== hov.blocked && now - hov.since >= INTENT_MS) {
       setHover(hov.cand, 'pointer');
     } else if (cur) {
-      if (hov.cand === cur || insideOutline(cur, mouse.x, mouse.y, 1.15)) hov.lost = 0;
+      if (hov.cand === cur || nearSilhouette(cur, mouse.x, mouse.y)) hov.lost = 0;
       else if (!hov.lost) hov.lost = now;
       else if (now - hov.lost > GRACE_MS) setHover(null);
     }
@@ -1338,59 +1530,97 @@
   }
 
   var qLean = new T.Quaternion(), qPar = new T.Quaternion(), qAdj = new T.Quaternion(), eLean = new T.Euler();
-  /* a caught plane lifts toward you, so it casts a soft shadow on the sky
-     (and anything) behind it: separation by depth, not by brightness */
-  var shadowList = [];
-  var blobTex = (function () {
-    var cv = document.createElement('canvas'); cv.width = cv.height = 128;
-    var c = cv.getContext('2d'), g = c.createRadialGradient(64, 64, 4, 64, 64, 62);
-    g.addColorStop(0, 'rgba(40,32,26,0.9)'); g.addColorStop(0.45, 'rgba(40,32,26,0.45)'); g.addColorStop(1, 'rgba(40,32,26,0)');
-    c.fillStyle = g; c.fillRect(0, 0, 128, 128);
-    return new T.CanvasTexture(cv);
-  })();
-  var shadows = [0, 1, 2].map(function () {
-    var m = new T.Mesh(new T.PlaneGeometry(1, 1),
-      new T.MeshBasicMaterial({ map: blobTex, transparent: true, opacity: 0, depthWrite: false }));
-    m.visible = false; wall.add(m);
-    return m;
+  /* The caught plane's shadow is its own shape: its pieces drawn again a
+     little further from you and a few pixels down and to the right (away
+     from the light, up and to the left), in a darker shade of whatever sky
+     is behind, very faint — softened by drawing it seven times in a small
+     ring (each piece of geometry carries seven draw groups for this). A
+     stencil value per pass stops the folded layers stacking up. Only the
+     caught plane (and one letting go) has one, and it comes and goes with
+     the lift. */
+  var SHADOW = { taps: 7, ring: 3, dx: 4, dy: 8, push: 1.2, alpha: 0.15, slots: 40 };
+  var shadowRes = { value: new T.Vector2(1, 1) };
+  var shadowMats = [];
+  for (var sk = 0; sk < SHADOW.taps; sk++) {
+    var sa = sk ? (sk - 1) / (SHADOW.taps - 1) * Math.PI * 2 : 0, sr = sk ? SHADOW.ring : 0;
+    shadowMats.push(new T.ShaderMaterial({
+      uniforms: { tap: { value: new T.Vector2(SHADOW.dx + Math.cos(sa) * sr, SHADOW.dy + Math.sin(sa) * sr) },
+        res: shadowRes, amount: { value: 0 }, push: { value: SHADOW.push }, skyMap: HAZE.skyMap, viewH: HAZE.viewH },
+      vertexShader: 'uniform vec2 tap, res;\nuniform float push;\nvoid main() {\n' +
+        '  vec4 mv = modelViewMatrix * vec4( position, 1.0 );\n' +
+        '  mv.xyz += normalize( mv.xyz ) * push;\n' +                       // a little further from you
+        '  gl_Position = projectionMatrix * mv;\n' +
+        '  gl_Position.xy += vec2( tap.x, - tap.y ) * 2.0 / res * gl_Position.w;\n}',
+      fragmentShader: 'uniform sampler2D skyMap;\nuniform float viewH, amount;\nvoid main() {\n' +
+        '  vec3 sky = texture2D( skyMap, vec2( 0.5, gl_FragCoord.y / viewH ) ).rgb;\n' +
+        '  gl_FragColor = vec4( sky * 0.4, amount );\n}',
+      transparent: true, depthWrite: false, side: T.DoubleSide,
+      stencilWrite: true, stencilRef: sk + 1, stencilFunc: T.NotEqualStencilFunc,
+      stencilFail: T.KeepStencilOp, stencilZFail: T.KeepStencilOp, stencilZPass: T.ReplaceStencilOp
+    }));
+  }
+  var tapAlpha = 1 - Math.pow(1 - SHADOW.alpha, 1 / SHADOW.taps);   // where all seven overlap: alpha
+  var shadowGeo0 = new T.BufferGeometry();
+  function copyWorld() { this.matrixWorld.copy(this.userData.src.matrixWorld); }
+  /* two sets (the caught plane and one letting go), made once, up front */
+  var shadowSets = [0, 1].map(function () {
+    var list = [];
+    for (var k = 0; k < SHADOW.slots; k++) {
+      var m = new T.Mesh(shadowGeo0, shadowMats);
+      m.matrixAutoUpdate = false; m.frustumCulled = false; m.visible = false;
+      m.onBeforeRender = copyWorld;
+      wall.add(m); list.push(m);
+    }
+    return list;
   });
+  function shadowGroups(g) {
+    g.clearGroups();
+    for (var k = 0; k < SHADOW.taps; k++) g.addGroup(0, Infinity, k);
+  }
+  var shadowList = [];
   function placeShadows() {
+    shadowRes.value.set(window.innerWidth, window.innerHeight);
     shadowList.sort(function (a, b) { return b.fx.cat - a.fx.cat; });
-    shadows.forEach(function (m, k) {
-      var p = shadowList[k];
-      if (!p) { m.visible = false; return; }
-      var c = centreOf(p, m.position);
-      c.x += p.size * 0.05; c.y -= p.size * 0.07; c.z -= 1.4;
-      m.scale.set(p.size * 0.95, p.size * 0.7, 1);
-      m.material.opacity = 0.26 * p.fx.cat * (1 - p.fx.dim);
-      m.visible = true;
+    shadowSets.forEach(function (set, si) {
+      var p = shadowList[si], regions = p ? p.rig.regions : [];
+      for (var k = 0; k < set.length; k++) {
+        var m = set[k], r = regions[k];
+        if (!r || !p.rig.root.visible) { m.visible = false; continue; }
+        m.geometry = r.mesh.geometry; m.userData.src = r.mesh;
+        m.matrixWorld.copy(r.mesh.matrixWorld);
+        m.visible = true;
+      }
     });
+    /* one amount for both (the stencil keeps them from doubling) */
+    var top = shadowList[0];
+    var amt = top ? tapAlpha * top.fx.cat * (1 - top.fx.dim) * (SHADOW.boost || 1) : 0;   // boost: checking only
+    for (var t = 0; t < shadowMats.length; t++) shadowMats[t].uniforms.amount.value = amt;
   }
 
   /* =================================================================== intro
-     "One, then many." The sky comes into focus, one plain cream plane is
-     thrown in and uncovers the title in its slipstream, the words settle,
-     then the others follow — far ones first, faster and faster, until the
-     sky is full and you realise everyone has asked. The interface arrives
-     last. One master clock (intro.t) drives all of it; every timing is in
-     INTRO. Skip it with any click, key, scroll or drag (it catches up over
-     0.4 s); a second visit in a session gets a 1.2 s version; reduced
-     motion gets a plain crossfade. GARDEN.intro has scrub/replay/speed for
-     tuning, and ?introSpeed=0.25 slows the whole thing. */
+     "One, then many", quickly. The words are HTML and come in by themselves
+     straight away (CSS, in index.html); nothing waits on the 3D. The planes
+     start as soon as the first few sheets are folded and on the GPU:
+     everything you can see, far to near, ever faster, each flying in from
+     beyond the nearest edge (far ones up out of the haze) onto its own
+     place in its loop. A sheet still being folded joins the wave when it's
+     ready. A plane can be hovered once it has landed. One clock (intro.t)
+     drives the wave; every timing is in INTRO. Any click, key, scroll or
+     drag catches it up over 0.4 s and does nothing else; a second visit in
+     a session gets a quicker wave; reduced motion, a crossfade in place.
+     ?introSpeed=0.25 slows it down. */
   var INTRO = {
-    sky:      { dur: 0.8, wash: 0.35 },                 // the sky coming into focus
-    threads:  { from: 0.1, spread: 0.6, dur: 0.45 },    // left to right
-    dolly:    { amount: 0.03, dur: 5.0 },               // arriving, barely noticed
-    throwIn:  { from: 0.8, dur: 1.8, depth: 12 },       // the first plane
-    bloom:    { delay: 0.3, dur: 0.8 },                 // cream to colour, once it's cruising
-    title:    { feather: 40, lead: 18, dotHold: 0.12, dotDur: 0.28 },
-    subtitle: { from: 2.4, stagger: 0.14, dur: 0.5, rise: 6 },
-    wave:     { from: 2.9, firstGap: 0.42, span: 1.75, dur: 0.95, durJitter: 0.15, startJitter: 0.08, farZ: -12 },
-    wobble:   { deg: 10, decay: 0.42, period: 0.62, life: 1.6 },
-    ui:       { notBefore: 4.6, lead: 0.8, stagger: 0.1, dur: 0.5, drop: 4, countDur: 0.6 },
-    skip:     0.4,
-    repeat:   { sky: 0.5, planes: [0.1, 0.75], title: 0.35, subtitle: 0.5, ui: 0.65, fade: 0.4, stagger: 0.15 },
-    reduced:  { fade: 0.6, sky: 0, title: 0.3, subtitle: 0.6, planes: 0.9, ui: 1.2, stagger: 0.1 }
+    firstBatch: 10,                                     // sheets ready before the wave starts
+    /* start times: the k-th of n at span * (k / (n-1))^(1/pw), the power set
+       so the first gap is firstGap — the first few ~120 ms apart, the last
+       a few ms — plus jitter; each flight dur +- durJitter */
+    full:    { span: 0.65, firstGap: 0.12, jitter: 0.04, dur: 0.9, durJitter: 0.15 },
+    repeat:  { span: 0.25, firstGap: 0.05, jitter: 0.02, dur: 0.5, durJitter: 0.1 },
+    reduced: { fade: 0.5 },
+    farZ: -12, hazeDepth: 18,
+    spawn: 0.2,                                         // the only fade: the first 200 ms of a flight
+    wobble:  { deg: 10, decay: 0.42, period: 0.62, life: 1.6 },
+    skip: 0.4
   };
   function bezierEase(x1, y1, x2, y2) {
     return function (x) {
@@ -1411,42 +1641,30 @@
   function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
   function seeded(i, k) { var x = Math.sin(i * 91.7 + k * 12.3) * 43758.5453; return x - Math.floor(x); }
 
-  var intro = { phase: 'loading', kind: 'full', t: 0, dur: 1, skipRate: 0, speed: 1, paused: false,
-                dolly: INTRO.dolly.amount, reveal: -1e9, dotAt: null, throwP: null, ready: 0, readySince: 0 };
+  var intro = { phase: 'loading', kind: 'full', t: 0, end: 0, skipRate: 0, speed: 1, paused: false, dolly: 0,
+                readyFrames: 0, slotOf: {}, nSlots: 0, allBuilt: false, skipAsked: false };
   (function () {
     var m = /[?&]introSpeed=([\d.]+)/.exec(location.search);
     if (m) intro.speed = Math.max(0.05, parseFloat(m[1]) || 1);
+    try { if (sessionStorage.getItem('qf-intro-seen')) intro.kind = 'repeat'; } catch (e) {}
+    if (reduceMotion) intro.kind = 'reduced';
   })();
   function introBusy() { return intro.phase !== 'done'; }
+  /* landed (or never flew): only then can it be hovered or clicked */
+  function arrived(p) {
+    if (p.appear != null && p.appear < 0.98) return false;
+    return !p.ent || intro.t >= p.ent.t0 + p.ent.dur;
+  }
 
   var dom = {};
   function grabDom() {
     dom.mast = document.querySelector('.masthead');
     dom.h1 = dom.mast && dom.mast.querySelector('h1');
-    dom.dot = dom.h1 && dom.h1.querySelector('.qf-dot');
     dom.p = dom.mast && dom.mast.querySelector('p');
     dom.contact = document.querySelector('.contact');
     dom.hint = document.querySelector('.hint');
-    dom.btns = Array.prototype.slice.call(document.querySelectorAll('.qdock button'));
-    dom.count = document.querySelector('.qdock .count');
-    /* the subtitle, a line per span, so it can settle line by line */
-    if (dom.p && !dom.p.querySelector('.ln')) {
-      var words = dom.p.textContent.trim().split(/\s+/), spans = [];
-      dom.p.textContent = '';
-      words.forEach(function (w, i) {
-        var sp = document.createElement('span'); sp.textContent = w + (i < words.length - 1 ? ' ' : '');
-        dom.p.appendChild(sp); spans.push(sp);
-      });
-      var lines = [], top = null;
-      spans.forEach(function (sp) {
-        if (top === null || Math.abs(sp.offsetTop - top) > 2) { lines.push([]); top = sp.offsetTop; }
-        lines[lines.length - 1].push(sp.textContent);
-      });
-      dom.p.textContent = '';
-      lines.forEach(function (ws) { var ln = document.createElement('span'); ln.className = 'ln'; ln.textContent = ws.join('').trim(); dom.p.appendChild(ln); });
-    }
-    dom.lines = dom.p ? Array.prototype.slice.call(dom.p.querySelectorAll('.ln')) : [];
   }
+  grabDom();
 
   /* where on screen a world point sits, and the world point at a screen spot
      and a depth */
@@ -1459,102 +1677,80 @@
     return new T.Vector3(camera.position.x + (sx - window.innerWidth / 2) * k, camera.position.y - (sy - window.innerHeight / 2) * k, z);
   }
 
-  /* who comes in when, from where */
-  function planIntro(kind) {
-    intro.kind = kind;
+  /* Before anything is built: where each plane will hang (the same sums as
+     buildPlane) and whether it'll be in view, so the ones you'll see are
+     folded first, far to near — the wave's order. */
+  function planPos(i) {
+    var row = Math.floor(i / COLS), col = i % COLS;
+    return new T.Vector3(col * COL_W + (row % 2) * COL_W * 0.5 + (rnd(i, 1) - 0.5) * 5,
+      -row * ROW_H + (rnd(i, 2) - 0.5) * 4 - 3, depthFor(i));
+  }
+  function buildOrder(N) {
+    camera.position.set(cam.x, cam.y, CAM_Z); camera.updateMatrixWorld();
+    var W = window.innerWidth, H = window.innerHeight, vis = [], rest = [];
+    for (var i = 0; i < N; i++) {
+      var v = planPos(i), sp = toScreen(v), m = 7 * PLANE_SCALE * H / visibleHeight(CAM_Z - v.z) + 24;
+      var o = { i: i, z: v.z, d: Math.hypot(sp.x - W / 2, sp.y - H / 2) };
+      (sp.front && sp.x > -m && sp.x < W + m && sp.y > -m && sp.y < H + m ? vis : rest).push(o);
+    }
+    vis.sort(function (a, b) { return a.z - b.z; });
+    rest.sort(function (a, b) { return a.d - b.d; });
+    intro.slotOf = {}; intro.nSlots = vis.length;
+    vis.forEach(function (o, k) { intro.slotOf[o.i] = k; });
+    return vis.concat(rest).map(function (o) { return o.i; });
+  }
+  function waveCfg() { return INTRO[intro.kind === 'repeat' ? 'repeat' : 'full']; }
+  function slotTime(k, n) {
+    var c = waveCfg();
+    if (n <= 1) return 0;
+    var pw = n > 2 && c.span > c.firstGap ? Math.log(n - 1) / Math.log(c.span / c.firstGap) : 1;
+    var t = c.span * Math.pow(k / (n - 1), 1 / pw);
+    return Math.max(0, t + (seeded(k, 1) - 0.5) * 2 * c.jitter * clamp01((k - 1) / 4));   // the first two keep their beat
+  }
+  function onView(p) {
+    var d = disc(p), W = window.innerWidth, H = window.innerHeight, rr = d.r * 1.1 + 24;
+    return d.front && d.x + rr > 0 && d.x - rr < W && d.y + rr > 0 && d.y - rr < H;
+  }
+  /* one plane's way in, starting at intro time t0 */
+  function planEntry(p, t0) {
+    (p.swing || p.fly).updateMatrixWorld(true);
     var W = window.innerWidth, H = window.innerHeight;
-    /* plan with the camera where the intro starts it */
-    camera.position.z = CAM_Z * (1 + (kind === 'full' ? INTRO.dolly.amount : 0));
-    camera.updateMatrixWorld();
-    wall.updateMatrixWorld(true);
-    planes.forEach(function (p) {
-      p.ent = null; p.appear = kind === 'full' ? 0 : 0; p.threadA = 0; p.cover = 0; p.introScale = 1;
-      var c = centreOf(p), sp = toScreen(c);
-      p.restScreen = sp;
-      /* in view if any of it is (its disc, not just its middle), with a margin */
-      var rr = disc(p).r * 1.1 + 24;
-      p.introVisible = sp.front && sp.x + rr > 0 && sp.x - rr < W && sp.y + rr > 0 && sp.y - rr < H;
-      p.threadAt = INTRO.threads.from + clamp01(sp.x / W) * INTRO.threads.spread;
-    });
-    if (kind !== 'full') { intro.dur = kind === 'repeat' ? 1.2 : INTRO.reduced.ui + INTRO.reduced.stagger + INTRO.reduced.fade + 0.05; return; }
-
-    /* the first plane: a hanging one whose place is up and to the right of
-       the title, carrying question #01 */
-    var aim = { x: 0.5 * W, y: 0.32 * H }, best = null, bd = Infinity;
-    planes.forEach(function (p) {
-      if (p.flyer || !p.introVisible || p.kind !== 'answered') return;
-      var sp = p.restScreen;
-      if (sp.x < 0.3 * W || sp.x > 0.72 * W || sp.y < 0.15 * H || sp.y > 0.55 * H || p.z < -8 || p.z > 24) return;
-      var d = Math.hypot(sp.x - aim.x, sp.y - aim.y);
-      if (d < bd) { bd = d; best = p; }
-    });
-    if (!best) planes.forEach(function (p) { if (!best && !p.flyer && p.introVisible) best = p; });
-    var first = D.answered()[0];
-    if (best && first && best.qid !== first.id) swapQuestion(best, planes.filter(function (q) { return q.qid === first.id && !q.flyer; })[0]);
-    intro.throwP = best;
-    if (best) {
-      var T0 = INTRO.throwIn.from, sp0 = best.restScreen, rest = centreOf(best);
-      /* up the left side from below, cresting just under the title, then
-         curving right onto its place */
-      var pts = [[-0.07 * W, 1.1 * H], [0.0 * W, 0.06 * H], [0.2 * W, -0.08 * H]].map(function (q) {
-        return toWorld(q[0], q[1], best.z).sub(rest);
-      });
-      best.ent = { mode: 'throw', t0: T0, dur: INTRO.throwIn.dur, p0: pts[0], p1: pts[1], p2: pts[2], depth: INTRO.throwIn.depth, wob: 1 };
-      best.introCream = creamBack(best.sheet, LOW_PPI, best.i + 51, false);
-      best.mats[0].userData.creamMap.value = best.introCream;
-      best.mats[0].userData.bleed.value = 0;
-    }
-
-    /* the others: everything you can see, far to near, ever faster */
-    var list = planes.filter(function (p) { return p.introVisible && p !== best; })
-      .sort(function (a, b) { return a.z - b.z; });
-    var n = list.length, g0 = INTRO.wave.firstGap, span = INTRO.wave.span;
-    /* gaps shrink geometrically: g0, g0 r, g0 r², … adding up to the span */
-    var lo = 0, hi = 0.999;
-    for (var it = 0; it < 40; it++) {
-      var r = (lo + hi) / 2, sum = n > 1 ? g0 * (1 - Math.pow(r, n - 1)) / (1 - r) : 0;
-      if (sum > span) hi = r; else lo = r;
-    }
-    var rr = lo, at = INTRO.wave.from, last = T0 + INTRO.throwIn.dur;
-    list.forEach(function (p, k) {
-      if (k > 0) at += g0 * Math.pow(rr, k - 1);
-      var t0 = Math.max(INTRO.wave.from, at + (seeded(p.i, 1) - 0.5) * 2 * INTRO.wave.startJitter);
-      var dur = INTRO.wave.dur * (1 + (seeded(p.i, 2) - 0.5) * 2 * INTRO.wave.durJitter);
-      var wob = seeded(p.i, 3) < 0.5 ? -1 : 1;
-      if (p.z < INTRO.wave.farZ) {
-        /* far ones come out of the haze */
-        p.ent = { mode: 'haze', t0: t0, dur: dur * 1.15, wob: 0 };
-      } else {
-        /* the rest glide in from the nearest edge onto their place */
-        var sp = p.restScreen, rest = centreOf(p), rad = disc(p).r;
-        var dl = sp.x, dr = W - sp.x, db = H - sp.y, sx, sy;
+    if (intro.kind === 'reduced') {
+      p.ent = { mode: 'fade', t0: t0, dur: INTRO.reduced.fade };
+    } else {
+      var c = waveCfg(), dur = c.dur * (1 + (seeded(p.i, 2) - 0.5) * 2 * c.durJitter);
+      if (p.z < INTRO.farZ) p.ent = { mode: 'haze', t0: t0, dur: dur, wob: 0 };
+      else {
+        /* from beyond the nearest edge, onto its place */
+        var d = disc(p), rest = centreOf(p), rad = d.r;
+        var dl = d.x, dr = W - d.x, db = H - d.y, sx, sy;
         var slide = (seeded(p.i, 4) - 0.5) * 0.3;
-        if (dl <= dr && dl <= db) { sx = -rad - 40; sy = sp.y + slide * dl + 0.15 * dl; }
-        else if (dr <= db) { sx = W + rad + 40; sy = sp.y + slide * dr + 0.15 * dr; }
-        else { sx = sp.x + (sp.x < W / 2 ? -1 : 1) * (0.45 + Math.abs(slide)) * db; sy = H + rad + 40; }   // diagonally, never straight up
+        if (dl <= dr && dl <= db) { sx = -rad - 40; sy = d.y + slide * dl + 0.15 * dl; }
+        else if (dr <= db) { sx = W + rad + 40; sy = d.y + slide * dr + 0.15 * dr; }
+        else { sx = d.x + (d.x < W / 2 ? -1 : 1) * (0.45 + Math.abs(slide)) * db; sy = H + rad + 40; }   // diagonally, never straight up
         var start = toWorld(sx, sy, p.z).sub(rest);
         var ctrl = start.clone().multiplyScalar(0.45); ctrl.y += start.length() * 0.12;
-        p.ent = { mode: 'edge', t0: t0, dur: dur, p0: start, p1: ctrl, wob: wob };
+        p.ent = { mode: 'edge', t0: t0, dur: dur, p0: start, p1: ctrl, wob: seeded(p.i, 3) < 0.5 ? -1 : 1 };
       }
-      last = Math.max(last, p.ent.t0 + p.ent.dur);
-    });
-    intro.last = last;
-    intro.uiFrom = Math.max(INTRO.ui.notBefore, last - INTRO.ui.lead);
-    intro.dur = Math.max(last, intro.uiFrom + INTRO.ui.stagger + INTRO.ui.dur, INTRO.dolly.dur) + 0.05;
+    }
+    intro.end = Math.max(intro.end, p.ent.t0 + Math.max(p.ent.dur, p.ent.wob ? INTRO.wobble.life : 0));
   }
-  /* the first plane carries question #01, so the first thing you ever see is
-     also the most natural first click */
-  function swapQuestion(a, b) {
-    if (!a || !b) return;
-    var ia = a.item, ib = b.item, qa = a.qid, qb = b.qid;
-    a.item = ib; a.qid = qb; b.item = ia; b.qid = qa;
-    [a, b].forEach(function (p) {
-      var old = p.front;
-      p.front = frontTexture(p.sheet, p.item, LOW_PPI, p.i + 7);
-      p.mats[0].map = p.front;
-      old.dispose();
-      if (p.listBtn) p.listBtn.textContent = 'Plane ' + (p.i + 1) + ': ' + p.item.q;
-    });
+  /* a plane has just been built: in view, it gets its place in the wave (or
+     joins it now, if the wave has passed its turn); out of view, it's
+     simply there */
+  function enlist(p) {
+    p.builtAt = performance.now();
+    if (intro.phase !== 'loading' && renderer.initTexture) {   // on the GPU before it's ever seen
+      [p.front, p.back, p.cream].forEach(function (tx) { if (tx) renderer.initTexture(tx); });
+    }
+    (p.swing || p.fly).updateMatrixWorld(true);
+    if (!onView(p)) { p.appear = 1; return; }
+    if (intro.phase === 'done') { p.appear = 0; p.lateIn = true; return; }
+    p.appear = 0;
+    var slot = intro.slotOf[p.i];
+    var t0 = intro.kind === 'reduced' ? 0 : slot != null ? slotTime(slot, intro.nSlots) : 0;
+    if (intro.phase === 'running') t0 = Math.max(t0, intro.t + 0.03);
+    planEntry(p, t0);
   }
 
   var qFl = new T.Quaternion(), qFp = new T.Quaternion(), qRestTmp = new T.Quaternion(), qWob = new T.Quaternion();
@@ -1569,26 +1765,26 @@
   /* one plane's arrival at intro time t */
   function arrive(p, t) {
     var e = p.ent;
-    if (!e) { p.appear = intro.kind === 'full' || t >= 0 ? 1 : 0; return; }
+    p.introHaze = 0; p.introScale = 1;
+    if (!e) return;
     if (t < e.t0) { p.appear = 0; return; }
     var u = clamp01((t - e.t0) / e.dur), k = EASE_PLANE(u), tau = t - e.t0;
+    if (e.mode === 'fade') { p.appear = EASE_TEXT(u); return; }
     var target = p.flyer ? p.fly : p.hang;
+    /* the only fade: its first 200 ms of travel */
+    p.appear = clamp01(tau / INTRO.spawn);
     if (e.mode === 'haze') {
-      p.appear = EASE_TEXT(u);
-      p.introScale = 0.6 + 0.4 * k;
+      /* up out of the haze: from deeper, small and soft, to its place */
+      p.introScale = 0.7 + 0.3 * k;
+      p.introHaze = 0.35 * (1 - k);
+      target.position.z -= INTRO.hazeDepth * (1 - k);
       target.position.y -= 1.5 * (1 - k);
     } else {
-      p.appear = clamp01(u * 5);
       var off = bez(e, k, vA);
-      if (e.mode === 'throw') off.z += e.depth * (1 - k) * (1 - k);
       target.position.add(off);
-      /* nose along the way it's moving, settling into its resting pose */
-      /* which way it's heading (a step further along the curve, minus here) */
+      /* nose along the way it's moving, easing into its resting pose */
       var ahead = bez(e, Math.min(1, k + 0.02), vB).sub(off);
-      if (e.mode === 'throw') ahead.z += e.depth * ((1 - Math.min(1, k + 0.02)) * (1 - Math.min(1, k + 0.02)) - (1 - k) * (1 - k));
       if (ahead.lengthSq() > 1e-10 && u < 1) {
-        /* nose along the way it's moving (as the flying planes do), easing
-           into its resting pose as it arrives */
         qFl.setFromAxisAngle(Y_AXIS, Math.atan2(ahead.x, ahead.z) - p.noseAng);
         var side = vSide.crossVectors(p.noseDir, Y_AXIS).normalize();
         var climb = Math.max(-0.45, Math.min(0.45, -Math.atan2(ahead.y, Math.hypot(ahead.x, ahead.z) + 1e-6) * 0.45));
@@ -1599,177 +1795,85 @@
         target.quaternion.slerpQuaternions(qFl, qRestTmp, smooth(0.45, 1, k));
       }
     }
-    /* a glide steadying after the throw: a damped roll */
+    /* steadying after the flight: a damped roll, gone to nothing by its end */
     if (e.wob && tau < INTRO.wobble.life && !reduceMotion) {
       var a = e.wob * INTRO.wobble.deg * Math.PI / 180 * Math.exp(-tau / INTRO.wobble.decay) * Math.cos(2 * Math.PI * tau / INTRO.wobble.period);
-      a *= 1 - smooth(intro.dur - 0.5, intro.dur, t);       // all settled by the handoff, so nothing jumps
+      a *= 1 - smooth(INTRO.wobble.life - 0.5, INTRO.wobble.life, tau);
       qWob.setFromAxisAngle(p.noseDir, a);
       p.tilt.quaternion.multiply(qWob);
     }
   }
 
-  var textBox = null, measureTick = 0;
-  window.addEventListener('resize', function () { measureTick = 0; intro.h1Left = null; });
-  /* set a style only when it changes (writes are cheap; churn isn't) */
+  /* The words stay put; planes passing behind them thin out (and threads
+     fade where they cross), so they always read: the title block, the
+     footer, and the hint while it shows. TEXT_RECTS: device pixels. */
+  var textBoxes = [], measureTick = 0;
+  window.addEventListener('resize', function () { measureTick = 0; });
   function setStyle(el, prop, v) { if (el && el['_qf_' + prop] !== v) { el['_qf_' + prop] = v; el.style[prop] = v; } }
-  function measureText() {
-    if (!dom.mast) return;
+  function boxOf(el, pad) {
+    if (!el || !el.offsetParent) return null;
+    var b = el.getBoundingClientRect();
+    if (b.width < 1) return null;
+    return { x0: b.left - pad, y0: b.top - pad, x1: b.right + pad, y1: b.bottom + pad };
+  }
+  function measureRects() {
     if (measureTick-- > 0) return;
     measureTick = 20;
-    var a = dom.h1.getBoundingClientRect(), b = dom.p && dom.p.offsetParent ? dom.p.getBoundingClientRect() : a;
-    textBox = { x0: Math.min(a.left, b.left) - 8, y0: a.top - 8, x1: Math.max(a.right, b.right) + 8, y1: Math.max(a.bottom, b.bottom) + 8 };
+    var a = boxOf(dom.h1, 8), b = boxOf(dom.p, 8);
+    var mast = a && b ? { x0: Math.min(a.x0, b.x0), y0: a.y0, x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) } : a;
+    var hint = dom.hint && dom.hint.classList.contains('show') ? boxOf(dom.hint, 8) : null;
+    textBoxes = [mast, boxOf(dom.contact, 8), hint];
     var dpr = renderer.getPixelRatio(), H = window.innerHeight;
-    TEXT_RECT.value.set(textBox.x0 * dpr, (H - textBox.y1) * dpr, textBox.x1 * dpr, (H - textBox.y0) * dpr);
+    textBoxes.forEach(function (t, k) {
+      if (t) TEXT_RECTS.value[k].set(t.x0 * dpr, (H - t.y1) * dpr, t.x1 * dpr, (H - t.y0) * dpr);
+      else TEXT_RECTS.value[k].set(-1e4, -1e4, -1e4, -1e4);
+    });
   }
 
-  /* per frame: the intro (while it runs), and always the planes behind the
-     title thinning out so the words read */
+  /* per frame: the wave (while it runs), and always the planes behind the
+     words thinning out */
   function introFrame(dt) {
-    if (!dom.mast) grabDom();
-    if (intro.phase === 'running' && !intro.paused) {
-      var rate = Math.max(intro.speed, intro.skipRate);
-      intro.t = Math.min(intro.dur, intro.t + dt * rate);
-    }
-    var t = intro.t, full = intro.kind === 'full', W = window.innerWidth;
-    measureText();
+    if (intro.phase === 'running' && !intro.paused) intro.t += dt * Math.max(intro.speed, intro.skipRate);
+    measureRects();
     var coverK = 1 - Math.exp(-dt * 2 / 0.25), coverNow = (intro.frame = (intro.frame || 0) + 1) % 2 === 0;
-    var running = intro.phase === 'running' || intro.phase === 'loading';
+    var running = intro.phase === 'running';
     planes.forEach(function (p) {
-      if (intro.phase === 'loading') { p.appear = 0; p.threadA = 0; return; }
-      p.introScale = 1;
-      if (intro.phase === 'running') {
-        if (full) arrive(p, t);
-        else {
-          var a0 = intro.kind === 'repeat' ? INTRO.repeat.planes[0] : INTRO.reduced.planes;
-          var a1 = intro.kind === 'repeat' ? INTRO.repeat.planes[1] : INTRO.reduced.planes + INTRO.reduced.fade;
-          p.appear = EASE_TEXT(clamp01((t - a0) / (a1 - a0)));
-        }
-        p.threadA = full ? EASE_TEXT(clamp01((t - p.threadAt) / INTRO.threads.dur)) : p.appear;
+      if (running) {
+        arrive(p, intro.t);
         if (p.introScale !== 1) p.tilt.scale.multiplyScalar(p.introScale);
-      }
-      /* behind the title: thin out (checked every other frame) */
+      } else if (intro.phase !== 'done' && p.ent) p.appear = 0;     // waiting for the wave
+      if (p.lateIn) { p.appear = Math.min(1, (p.appear || 0) + dt / 0.3); if (p.appear >= 1) p.lateIn = false; }
+      /* behind the words: thin out (checked every other frame) */
       if (!coverNow) return;
       var cv = 0;
-      if (textBox && p.state !== 'away' && !(intro.phase === 'running' && p === intro.throwP)) {
+      if (p.state !== 'away') {
         var d = disc(p);
         if (d.front) {
-          var nx = Math.max(textBox.x0, Math.min(d.x, textBox.x1)), ny = Math.max(textBox.y0, Math.min(d.y, textBox.y1));
-          if (Math.hypot(d.x - nx, d.y - ny) < d.r * 0.55) cv = 1;
+          for (var k = 0; k < textBoxes.length && !cv; k++) {
+            var tb = textBoxes[k]; if (!tb) continue;
+            var nx = Math.max(tb.x0, Math.min(d.x, tb.x1)), ny = Math.max(tb.y0, Math.min(d.y, tb.y1));
+            if (Math.hypot(d.x - nx, d.y - ny) < d.r * 0.55) cv = 1;
+          }
         }
       }
       p.cover += (cv - p.cover) * coverK;
     });
-    if (intro.phase !== 'running') return;
-
-    /* the sky, the threads (above), and the slow dolly */
-    if (full) {
-      skyWash.value = INTRO.sky.wash * (1 - EASE_TEXT(clamp01(t / INTRO.sky.dur)));
-      intro.dolly = INTRO.dolly.amount * (1 - EASE_PLANE(clamp01(t / INTRO.dolly.dur)));
-    } else {
-      var skyDur = intro.kind === 'repeat' ? INTRO.repeat.sky : INTRO.reduced.fade;
-      skyWash.value = INTRO.sky.wash * (1 - EASE_TEXT(clamp01(t / skyDur)));
-      intro.dolly = 0;
-    }
-
-    /* the title */
-    if (dom.h1) {
-      if (full && intro.throwP) {
-        setStyle(dom.h1, 'opacity', '1');
-        if (intro.h1Left == null) {                         // measured once (it's fixed in place)
-          intro.h1Left = dom.h1.getBoundingClientRect().left;
-          intro.dotEnd = dom.dot.offsetLeft + dom.dot.offsetWidth;
-        }
-        var px = toScreen(centreOf(intro.throwP)).x;
-        if (t >= intro.throwP.ent.t0) intro.reveal = Math.max(intro.reveal, px - intro.h1Left + INTRO.title.lead);
-        if (t >= intro.throwP.ent.t0 + intro.throwP.ent.dur) intro.reveal = Math.max(intro.reveal, intro.reveal + dt * 900);
-        var f = INTRO.title.feather, rv = Math.max(-2 * f, intro.reveal);
-        var mask = 'linear-gradient(90deg, #000 ' + (rv - f) + 'px, transparent ' + rv + 'px)';
-        setStyle(dom.h1, 'webkitMaskImage', mask); setStyle(dom.h1, 'maskImage', mask);
-        /* the full stop lands last, after a breath */
-        var dotEnd = intro.dotEnd;
-        if (intro.dotAt === null && rv - f >= dotEnd) intro.dotAt = t + INTRO.title.dotHold;
-        var dk = intro.dotAt === null ? 0 : EASE_TEXT(clamp01((t - intro.dotAt) / INTRO.title.dotDur));
-        setStyle(dom.dot, 'opacity', dk.toFixed(3));
-        setStyle(dom.dot, 'transform', 'translateY(' + (-3 * (1 - dk)).toFixed(2) + 'px)');
-      } else {
-        var ta = intro.kind === 'repeat' ? INTRO.repeat.title : INTRO.reduced.title, td = intro.kind === 'repeat' ? INTRO.repeat.fade : INTRO.reduced.fade;
-        setStyle(dom.h1, 'opacity', EASE_TEXT(clamp01((t - ta) / td)).toFixed(3));
-      }
-    }
-    /* the subtitle, line by line */
-    dom.lines.forEach(function (ln, i) {
-      var from, dur, rise;
-      if (full) { from = INTRO.subtitle.from + i * INTRO.subtitle.stagger; dur = INTRO.subtitle.dur; rise = INTRO.subtitle.rise; }
-      else if (intro.kind === 'repeat') { from = INTRO.repeat.subtitle; dur = INTRO.repeat.fade; rise = 0; }
-      else { from = INTRO.reduced.subtitle; dur = INTRO.reduced.fade; rise = 0; }
-      var k = EASE_TEXT(clamp01((t - from) / dur));
-      setStyle(ln, 'opacity', k.toFixed(3));
-      setStyle(ln, 'transform', rise ? 'translateY(' + (rise * (1 - k)).toFixed(2) + 'px)' : '');
-    });
-    if (dom.p) setStyle(dom.p, 'opacity', '0.72');
-    /* the interface, last */
-    var uiFrom = full ? intro.uiFrom : intro.kind === 'repeat' ? INTRO.repeat.ui : INTRO.reduced.ui;
-    var uiDur = full ? INTRO.ui.dur : intro.kind === 'repeat' ? INTRO.repeat.fade : INTRO.reduced.fade;
-    var uiStag = full ? INTRO.ui.stagger : intro.kind === 'repeat' ? INTRO.repeat.stagger : INTRO.reduced.stagger;
-    if (!dom.btns.length) dom.btns = Array.prototype.slice.call(document.querySelectorAll('.qdock button'));
-    var dock = document.querySelector('.qdock');
-    setStyle(dock, 'opacity', '1');
-    dom.btns.forEach(function (b, i) {
-      var k = EASE_TEXT(clamp01((t - uiFrom - i * uiStag) / uiDur));
-      setStyle(b, 'opacity', k.toFixed(3));
-      setStyle(b, 'transform', full ? 'translateY(' + (-INTRO.ui.drop * (1 - k)).toFixed(2) + 'px)' : '');
-    });
-    setStyle(dom.contact, 'opacity', (0.7 * EASE_TEXT(clamp01((t - uiFrom) / uiDur))).toFixed(3));
-    if (!dom.count) dom.count = document.querySelector('.qdock .count');
-    if (dom.count) {
-      var N = D.answered().length;
-      if (full) {
-        var c0 = intro.last - INTRO.ui.countDur;
-        var cn = String(Math.round(N * EASE_TEXT(clamp01((t - c0) / INTRO.ui.countDur))));
-        if (dom.count.textContent !== cn) dom.count.textContent = cn;
-      } else if (dom.count.textContent !== String(N)) dom.count.textContent = String(N);
-    }
-    /* the first plane takes its colour, like ink soaking in */
-    var tp = intro.throwP;
-    if (full && tp && tp.introCream) {
-      var b0 = tp.ent.t0 + tp.ent.dur + INTRO.bloom.delay;
-      tp.mats[0].userData.bleed.value = EASE_TEXT(clamp01((t - b0) / INTRO.bloom.dur));
-    }
-    if (intro.t >= intro.dur) finishIntro();
+    if (running && intro.allBuilt && intro.t >= intro.end) finishIntro();
   }
 
   function startIntro() {
-    var kind = 'full';
-    try { if (sessionStorage.getItem('qf-intro-seen')) kind = 'repeat'; } catch (e) {}
-    if (reduceMotion) kind = 'reduced';
-    grabDom();
-    planIntro(kind);
-    intro.t = 0; intro.skipRate = 0; intro.reveal = -1e9; intro.dotAt = null;
-    intro.phase = 'running';
+    intro.phase = 'running'; intro.t = 0; intro.skipRate = 0;
+    if (intro.skipAsked) skipIntro();
     try { sessionStorage.setItem('qf-intro-seen', '1'); } catch (e) {}
   }
   function skipIntro() {
-    if (intro.phase !== 'running') return;
+    if (intro.phase !== 'running') { intro.skipAsked = true; return; }
     intro.paused = false;
-    intro.skipRate = Math.max(intro.speed, (intro.dur - intro.t) / INTRO.skip);
+    intro.skipRate = Math.max(intro.speed, (intro.end - intro.t) / INTRO.skip, 3);
   }
   function finishIntro() {
-    intro.phase = 'done'; intro.t = intro.dur; intro.dolly = 0; skyWash.value = 0;
-    planes.forEach(function (p) { p.appear = 1; p.threadA = 1; p.ent = null; p.introScale = 1; });
-    var tp = intro.throwP;
-    if (tp && tp.introCream) {
-      tp.mats[0].userData.bleed.value = 1; tp.mats[0].userData.creamMap.value = tp.back;
-      tp.introCream.dispose(); tp.introCream = null;
-    }
-    document.body.classList.remove('intro');
-    function clear(el) {
-      if (!el) return;
-      el.style.cssText = '';
-      Object.keys(el).forEach(function (k) { if (k.indexOf('_qf_') === 0) delete el[k]; });
-    }
-    [dom.h1, dom.dot, dom.p, dom.contact, document.querySelector('.qdock')].concat(dom.lines, dom.btns).forEach(clear);
-    if (dom.count) dom.count.textContent = String(D.answered().length);
-    armHint();
+    intro.phase = 'done'; intro.t = Math.max(intro.t, intro.end);
+    planes.forEach(function (p) { if (p.ent) { p.appear = 1; p.ent = null; } p.introScale = 1; p.introHaze = 0; });
   }
   /* the hint: only after two quiet seconds, and never again once you've
      scrolled, dragged or clicked */
@@ -1789,7 +1893,8 @@
   var swallowUp = false;
   ['pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(function (type) {
     window.addEventListener(type, function (e) {
-      if (intro.phase === 'running') {
+      var atSky = type === 'keydown' ? (e.target === document.body || e.target === document.documentElement) : e.target === canvas;
+      if (intro.phase !== 'done' && atSky) {
         skipIntro();
         if (type === 'pointerdown' || type === 'touchstart') swallowUp = true;
         if (type === 'wheel' || type === 'keydown') e.preventDefault();
@@ -1803,6 +1908,7 @@
     if (swallowUp) { swallowUp = false; e.stopImmediatePropagation(); }
   }, true);
   S.subscribe(function (st) { if (st.openId || st.panelOpen) document.body.classList.add('oriented'); });
+  armHint();
 
   /* -------------------------------------------------------- the live filter
      Whatever the panel shows is also what the sky shows. Planes that don't
@@ -2001,9 +2107,13 @@
     camera.updateMatrixWorld();
 
     pointerHover(now);
-    /* the caught plane, and where it sits on screen: the others go a touch
-       soft, and any standing in front of it and overlapping it turn
-       see-through, so it's never buried */
+    /* the tag only ever shows for a caught plane */
+    if (peek.classList.contains('on') && S.get().hoveredId == null) {
+      console.warn('[qf] hover tag was showing with no hovered plane; hiding it');
+      peek.classList.remove('on');
+    }
+    /* the caught plane, and where it sits on screen (for the bank). Nothing
+       else changes: no other plane's colour, opacity or material. */
     var prim = primaryP && primaryP.state !== 'away' && !primaryP.launching ? primaryP : null;
     var pd = prim ? disc(prim) : null;
     var st0 = S.get(), pointerLean = prim && (st0.hoverSource === 'pointer' || st0.hoverSource === 'touch');
@@ -2019,7 +2129,6 @@
     var sub = Math.max(1, Math.ceil(dt / (1 / 120))), h = dt / sub, G = 386;    // in/s^2
     var fxK = reduceMotion ? 1 : 1 - Math.exp(-dt / FX_TAU);
     var quick = 1 - Math.exp(-dt / 0.06);
-    var hazeK = reduceMotion ? quick : 1 - Math.exp(-dt / 0.13);
     shadowList.length = 0;
     for (var i = 0; i < planes.length; i++) {
       var p = planes[i];
@@ -2027,18 +2136,12 @@
          so a change ripples across the sky) */
       var fx = p.fx;
       if (now >= fx.at) { fx.dim += (fx.dimT - fx.dim) * fxK; fx.fwd += (fx.fwdT - fx.fwd) * fxK; }
-      /* the catch: in over ~300 ms, out over ~600 ms */
-      fx.cat += (fx.catT - fx.cat) * (reduceMotion ? quick : 1 - Math.exp(-dt / (fx.catT > fx.cat ? 0.1 : 0.2)));
-      if (fx.catT && !fx.caught) { fx.caught = true; if (!reduceMotion) fx.glint = 0; }
-      if (!fx.catT) fx.caught = false;
-      if (fx.glint >= 0) { fx.glint += dt / 0.7; if (fx.glint >= 1) fx.glint = -1; }
-      var hazeT = prim && fx.catT < 0.5 ? 1 : 0, occlT = 0;
-      if (prim && p !== prim && p.state !== 'away') {
-        var d = disc(p);
-        if (d.front && d.dist < pd.dist - 0.5 && Math.hypot(d.x - pd.x, d.y - pd.y) < (d.r + pd.r) * 0.72) occlT = 1;
-      }
-      fx.haze += (hazeT - fx.haze) * hazeK;
-      fx.occl += (occlT - fx.occl) * hazeK;
+      /* the catch: in over ~200 ms, out over ~150 ms (the tag and the
+         shadow go with it) */
+      fx.cat += (fx.catT - fx.cat) * (reduceMotion ? quick : 1 - Math.exp(-dt / (fx.catT > fx.cat ? 0.07 : 0.04)));
+      /* the wing breath starts on the catch and eases out on the release */
+      if (fx.catT && !fx.caught) { fx.caught = true; if (!reduceMotion) breathIn(p, now); }
+      else if (!fx.catT && fx.caught) { fx.caught = false; breathOut(p, now); }
       /* bank toward the cursor (or, from the panel, a gentle lean its way) */
       var rollT = 0, pitchT = 0;
       if (p === prim && !reduceMotion) {
@@ -2062,14 +2165,21 @@
       }
       var away = p.state === 'away' || p.launching;
       var u = p.mats[0].userData;
-      u.dim.value = away ? 0 : fx.dim;
-      u.haze.value = away ? 0 : fx.haze;
-      u.occl.value = away ? 0 : fx.occl;
-      u.glint.value = away || fx.glint < 0 ? -1 : -0.2 + 1.4 * smooth(0, 1, fx.glint);
-      var fadeV = away ? 1 : (p.appear == null ? 1 : p.appear) * (1 - 0.65 * (p.cover || 0));
-      u.fade.value = fadeV;
-      var faded = !away && (fx.dim > 0.01 || fx.occl > 0.01 || fadeV < 0.999);
-      if (faded !== p.mats[0].transparent) { p.mats[0].transparent = faded; p.mats[0].alphaToCoverage = !faded; }
+      u.dim.value = away ? 0 : Math.min(1, fx.dim + (p.introHaze || 0));
+      /* its opacity, as the blend constant (the material itself never
+         changes): arriving, behind the title, filtered out. Fully clear, it
+         isn't drawn at all, so it can't hide anything behind it. */
+      var op = away ? 1 : (p.appear == null ? 1 : p.appear) * (1 - 0.65 * (p.cover || 0)) * (1 - 0.85 * fx.dim);
+      u.fade.value = op;
+      var show = op > 0.004;
+      if (p.rig.root.visible !== show) p.rig.root.visible = show;
+      /* the wings: only while it hangs or flies (an opening or a launch
+         drives the creases itself) */
+      if (p.wb) {
+        if (away || (anim && anim.p === p)) {
+          if (p.wb.set || p.wb.val) { p.wb.val = p.wb.flex = 0; p.wb.set = false; p.wb.on = false; u.flex.value = 0; }
+        } else { wingBreath(p, now); applyWings(p); }
+      }
       var zoff = -7 * fx.dim + 1.2 * fx.fwd + lift, sc = 1 - 0.1 * fx.dim;
       var leaning = Math.abs(fx.roll) + Math.abs(fx.pitch) > 1e-4;
       if (leaning) qLean.setFromEuler(eLean.set(fx.pitch, 0, fx.roll));
@@ -2084,6 +2194,7 @@
       p.swing.position.z = p.z + zoff;
       p.hang.position.set(0, p.hangY + bob, 0);              // set whole every frame (the intro adds to it)
       if (!away) p.tilt.scale.setScalar(PLANE_SCALE * sc);
+      if (p.threadA < 1 && p.builtAt) p.threadA = EASE_TEXT(Math.min(1, (now - p.builtAt) / 400));
       if (p.stringMat) p.stringMat.opacity = p.stringOpacity * (1 - 0.8 * fx.dim) * (p.threadA == null ? 1 : p.threadA);
       if (reduceMotion) {
         p.hang.rotation.set(0, p.yaw0, 0); p.tilt.rotation.set(p.pitch, 0, p.roll);
@@ -2123,10 +2234,8 @@
         p.tilt.quaternion.premultiply(qAdj);
       }
     }
-    if (intro.phase === 'ready') {
-      intro.ready = dt < 0.03 ? intro.ready + 1 : 0;
-      if (intro.ready >= 4 || now - intro.readySince > 900) startIntro();
-    }
+    /* compiled and uploaded last frame: one clean frame, then it starts */
+    if (intro.phase === 'ready' && ++intro.readyFrames >= 2) startIntro();
     introFrame(dt);
     placeShadows();
 
@@ -2173,13 +2282,42 @@
      The fonts have to be in before the type is drawn into the sheets, then
      the planes are folded a few per frame with a count on screen. */
   var loading = document.getElementById('loading');
+  /* Before anything is seen: every shader compiled and every sheet's
+     pictures on the GPU, so no plane is ever drawn half-ready (the planes
+     are all hidden until the intro brings them in, so they're shown just
+     for the compile). */
+  function warmUp() {
+    var hidden = [];
+    planes.forEach(function (p) { if (!p.rig.root.visible) { p.rig.root.visible = true; hidden.push(p); } });
+    var sm = shadowSets[0][0], sp0 = planes[0];
+    if (sp0) { sm.geometry = sp0.rig.regions[0].mesh.geometry; sm.userData.src = sp0.rig.regions[0].mesh; sm.visible = true; }
+    renderer.compile(wall, camera);
+    renderer.compile(stage, camera);
+    if (renderer.initTexture) {
+      planes.forEach(function (p) { [p.front, p.back, p.cream].forEach(function (tx) { if (tx) renderer.initTexture(tx); }); });
+      renderer.initTexture(HAZE.skyMap.value);
+    }
+    hidden.forEach(function (p) { p.rig.root.visible = false; });
+    sm.visible = false;
+  }
+  /* the sheets' type is set in Bitter, so it waits for the font — but not
+     forever: after 2.5 s it's set in Georgia rather than keep the sky empty */
   function fontsReady() {
     if (!document.fonts || !document.fonts.load) return Promise.resolve();
-    return Promise.all([
-      document.fonts.load('700 40px "Bitter"'),
-      document.fonts.load('400 20px "Bitter"'),
-      document.fonts.load('500 20px "Bitter"')
-    ]).catch(function () {});
+    /* the font's stylesheet loads without holding up the page, so first
+       wait for it to arrive (until then the browser doesn't know Bitter) */
+    var link = document.querySelector('link[href*="fonts.googleapis.com/css2"][media]');
+    var sheet = !link || link.media !== 'print' ? Promise.resolve() : new Promise(function (r) {
+      link.addEventListener('load', r); link.addEventListener('error', r);
+    });
+    return Promise.race([
+      sheet.then(function () { return Promise.all([
+        document.fonts.load('700 40px "Bitter"'),
+        document.fonts.load('400 20px "Bitter"'),
+        document.fonts.load('500 20px "Bitter"')
+      ]); }).catch(function () {}),
+      new Promise(function (r) { setTimeout(r, 2500); })
+    ]);
   }
   resize();
   var b0 = bounds();
@@ -2189,23 +2327,43 @@
   cam.ty = cam.y = b0.maxY - visibleHeight(CAM_Z) * 0.34; clampTarget();
   cam.x = cam.tx; cam.y = cam.ty;
   requestAnimationFrame(frame);
+  /* Fold the planes a frame's worth at a time — the ones in view first, far
+     to near, in the wave's order. As soon as the first few are ready (and on
+     the GPU) the wave starts; the rest join it as they're folded. */
+  window.__qfTimings = { start: Math.round(performance.now()) };
   fontsReady().then(function () {
-    var i = 0, last = performance.now();
+    __qfTimings.fonts = Math.round(performance.now());
+    var order = buildOrder(N), i = 0, last = performance.now();
+    var batch = Math.min(INTRO.firstBatch, Math.max(1, intro.nSlots));
     (function more() {
-      /* a frame's worth at a time, so the count keeps moving; but if the page
-         is in the background and only called now and then, build more each
-         time so it still finishes */
+      /* if the page is in the background and only called now and then,
+         build more each time so it still finishes; lighter once the wave flies */
       var now = performance.now(), gap = now - last;
-      var until = now + (gap > 100 ? 400 : 14);
-      while (i < N && performance.now() < until) buildPlane(i++);
+      var until = now + (gap > 100 ? 400 : intro.phase === 'loading' ? 14 : 6);
+      while (i < N && performance.now() < until) enlist(buildPlane(order[i++]));
       last = performance.now();
-      loading.textContent = 'folding planes … ' + i + ' / ' + N;
+      if (intro.phase === 'loading' && i >= batch) ready();
       if (i < N) requestAnimationFrame(more);
       else {
-        D.waiting().forEach(buildWaitingPlane);
+        D.waiting().forEach(function (it) { enlist(buildWaitingPlane(it)); });
         refreshTargets();
-        loading.classList.add('done');
-        intro.phase = 'ready'; intro.readySince = performance.now();
+        intro.allBuilt = true;
+        __qfTimings.built = Math.round(performance.now());
+        /* ?timing logs when each stage was reached (ms after navigation) */
+        if (/[?&]timing\b/.test(location.search)) console.info('[qf] timings', JSON.stringify(__qfTimings));
+      }
+    })();
+  });
+  function ready() {
+    refreshTargets();
+    warmUp();
+    __qfTimings.firstBatch = Math.round(performance.now());
+    /* the line (if it showed) fades from wherever it got to */
+    var lo = getComputedStyle(loading).opacity;
+    loading.style.animation = 'none'; loading.style.opacity = lo;
+    void loading.offsetWidth;
+    loading.style.opacity = '0';
+    intro.phase = 'ready'; intro.readyFrames = 0;
         window.GARDEN = { planes: planes, open: openPlane, close: closePlane, camera: camera, shadow: shadow,
           /* where a question's plane is on screen, for the panel's pointer line */
           locate: locate,
@@ -2213,37 +2371,32 @@
              and throw it into the holding pattern; resolves when it lands */
           launch: launch,
           isOpen: function () { return !!openP; },
-          /* for tuning the intro: GARDEN.intro.scrub(2.1), .replay('full'), .speed = 0.25 */
+          timings: function () { return __qfTimings; },
+          /* for tuning the wave: GARDEN.intro.replay('full' | 'repeat' | 'reduced'), .speed = 0.25 */
           intro: {
-            get t() { return intro.t; }, get dur() { return intro.dur; }, get phase() { return intro.phase; },
+            get t() { return intro.t; }, get dur() { return intro.end; }, get phase() { return intro.phase; },
             get kind() { return intro.kind; }, get speed() { return intro.speed; }, set speed(v) { intro.speed = v; },
-            scrub: function (t) {
-              intro.paused = true; intro.t = Math.max(0, Math.min(intro.dur, t));
-              intro.reveal = -1e9; intro.dotAt = null;          // re-derived from where the plane is now
-              var tp = intro.throwP;
-              if (tp && tp.ent && intro.t > tp.ent.t0 + tp.ent.dur) intro.dotAt = 0;   // long since landed
-            },
             play: function () { intro.paused = false; },
             skip: skipIntro,
             replay: function (kind) {
-              document.body.classList.add('intro');
-              planes.forEach(function (p) { p.appear = 0; p.threadA = 0; });
-              intro.phase = 'running'; intro.paused = false;
-              planIntro(kind || 'full');
-              if (intro.kind === 'full' && intro.throwP) {
-                intro.throwP.mats[0].userData.bleed.value = 0;
-              }
-              intro.t = 0; intro.skipRate = 0; intro.reveal = -1e9; intro.dotAt = null; skyWash.value = INTRO.sky.wash;
+              intro.kind = kind || 'full'; intro.end = 0;
+              var vis = [];
+              planes.forEach(function (p) {
+                p.ent = null; p.introScale = 1; p.introHaze = 0; p.lateIn = false;
+                if (onView(p)) vis.push(p); else p.appear = 1;
+              });
+              vis.sort(function (a, b) { return a.z - b.z; });
+              vis.forEach(function (p, k) { p.appear = 0; planEntry(p, intro.kind === 'reduced' ? 0 : slotTime(k, vis.length)); });
+              intro.phase = 'running'; intro.paused = false; intro.t = 0; intro.skipRate = 0;
             },
             schedule: function () {
               return planes.filter(function (p) { return p.ent; }).map(function (p) {
                 return { i: p.i, z: +p.z.toFixed(1), mode: p.ent.mode, t0: +p.ent.t0.toFixed(3), dur: +p.ent.dur.toFixed(3) };
               }).sort(function (a, b) { return a.t0 - b.t0; });
-            },
-            timings: function () { return { dur: intro.dur, last: intro.last, uiFrom: intro.uiFrom, kind: intro.kind }; }
+            }
           },
           /* for checking: the renderer and scenes, read-only use */
-          _debug: { renderer: renderer, stage: stage, wall: wall,
+          _debug: { renderer: renderer, stage: stage, wall: wall, shadow: SHADOW,
             tick: function () { runAnim(performance.now()); },
             /* run the scene forward by `ms` right now, in 16 ms frames (for
                checking in a throttled background tab) */
@@ -2262,7 +2415,5 @@
           },
           /* a picture of the canvas right now, for checking the layout */
           snap: function () { draw(); return canvas.toDataURL('image/jpeg', 0.85); } };
-      }
-    })();
-  });
+  }
 })();

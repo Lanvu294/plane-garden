@@ -6,7 +6,11 @@
 <title>Questions, folded</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<!-- the font never holds up the first paint: the words show at once (in
+     Georgia for a moment if Bitter is still on its way) -->
+<link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet"></noscript>
+<link rel="preload" href="lib/three.min.js" as="script">
 <style>
   :root {
     --paper: #DEDAD3; --ink: #1F2328; --rule: #638097; --wall: #ECE9E3;
@@ -45,28 +49,53 @@
   .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 700; font-size: 34px;
     line-height: 1.05; margin: 0 0 10px; letter-spacing: -0.01em; }
   .masthead p { margin: 0; font-size: 12px; line-height: 1.6; opacity: .72; max-width: 360px; transition: opacity .8s; }
+
+  /* The words don't wait for the sky: they come in on their own as soon as
+     the page is there — the title at 0.1 s, the subtitle line by line from
+     0.3 s, the buttons and footer at 0.5 s — each a 400 ms fade and a small
+     rise. (backwards: once done, the page's own opacities take over.) */
+  @keyframes qf-in { from { opacity: 0; transform: translateY(5px); } }
+  @keyframes qf-fade { from { opacity: 0; } }
+  .masthead h1 { animation: qf-in .4s ease-out .1s backwards; }
+  .masthead p .ln { animation: qf-in .4s ease-out backwards; }
+  .masthead p .ln:nth-child(1) { animation-delay: .3s; }
+  .masthead p .ln:nth-child(2) { animation-delay: .4s; }
+  .masthead p .ln:nth-child(3) { animation-delay: .5s; }
+  .qdock, .contact { animation: qf-in .4s ease-out .5s backwards; }
+  @media (prefers-reduced-motion: reduce) {
+    .masthead h1, .masthead p .ln, .qdock, .contact { animation-name: qf-fade; }
+  }
   /* once you've unfolded something or opened the panel, the subtitle has done its job */
   body.oriented .masthead p { opacity: .45; }
 
   /* the hint waits: it only appears after a couple of quiet seconds, and is
      gone for good after the first scroll, drag or click */
-  .hint { position: fixed; right: 26px; bottom: 22px; font-size: 11px; letter-spacing: .08em;
+  .hint { position: fixed; right: 26px; bottom: 22px; font-size: 11px; letter-spacing: .08em; z-index: 2;
     text-transform: uppercase; opacity: 0; pointer-events: none; text-align: right; line-height: 1.7;
-    transition: opacity 1.4s ease; }
-  .hint.show { opacity: .6; }
-  .contact { position: fixed; left: 28px; bottom: 22px; font-size: 11px; opacity: .7; line-height: 1.7; }
+    color: #15181C; transition: opacity 1.4s ease; }
+  .hint.show { opacity: 1; }
+  .contact { position: fixed; left: 28px; bottom: 22px; font-size: 11px; line-height: 1.7; z-index: 2; color: #15181C; }
+  /* the bottom corners get the same soft haze as the title, in the sky's own
+     colour down there: 75% through the words, feathered to nothing, no edge.
+     Planes behind them thin out too (in the scene), so the words always
+     read (at least 4.5:1 against the haze) */
+  .contact::before, .hint::before { content: ''; position: absolute; left: -90px; right: -90px; top: -60px; bottom: -40px;
+    z-index: -1; pointer-events: none;
+    background: radial-gradient(ellipse 50% 50% at 50% 55%, rgba(234, 134, 100, .78) 0%, rgba(234, 134, 100, .78) 52%,
+      rgba(234, 134, 100, .32) 78%, rgba(234, 134, 100, 0) 100%); }
   .contact a { color: inherit; }
 
-  /* only the plain sky while loading; the label shows only if it takes a while */
-  .loading { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 12px;
-    letter-spacing: .1em; text-transform: uppercase; opacity: 0; transition: opacity .6s;
-    animation: qf-load-show .8s 1.6s forwards; }
-  @keyframes qf-load-show { to { opacity: .5; } }
+  /* the sky waits for its planes quietly; if they take a while, one small
+     line under the subtitle — no numbers */
+  .loading { margin-top: 10px; font-size: 12px; font-style: italic;
+    letter-spacing: .02em; opacity: 0; transition: opacity .6s; pointer-events: none;
+    animation: qf-load-show .8s 1.2s forwards; }
+  @keyframes qf-load-show { to { opacity: .55; } }
   .loading.done { opacity: 0 !important; animation: none; pointer-events: none; }
 
   .peek { position: fixed; pointer-events: none; font-size: 11px; letter-spacing: .06em; padding: 5px 8px;
     background: var(--ink); color: var(--paper); transform: translate(14px, 14px); opacity: 0;
-    transition: opacity .15s; white-space: nowrap; z-index: 7; }
+    transition: opacity .13s; white-space: nowrap; z-index: 7; }
   /* the tag rides with the cursor, and comes in just after the plane catches */
   .peek.on { opacity: 1; transition-delay: .15s; }
 
@@ -82,9 +111,6 @@
   body.reading .hint, body.reading .contact { opacity: 0; }
   /* while a sheet is open or the panel is out, the title block steps back */
   body.reading .masthead, body.asking .masthead { opacity: .3; }
-  /* the intro reveals these itself; nothing shows before it starts */
-  body.intro .masthead h1, body.intro .masthead p, body.intro .contact, body.intro .qdock { opacity: 0; }
-  body.intro .qdock, body.intro .contact { pointer-events: none; }
   .reader .short { display: none; }
   @media (max-width: 640px) { .reader button { padding: 8px 10px; font-size: 11px; } }
   @media (max-width: 480px) {
@@ -109,19 +135,19 @@
 </style>
 <link rel="stylesheet" href="panel.css">
 </head>
-<body class="intro">
+<body>
 <canvas id="stage" aria-hidden="true"></canvas>
 <div class="grain" aria-hidden="true"></div>
 <div class="grain-top" aria-hidden="true"></div>
 
 <div class="masthead">
   <h1>Questions, folded<span class="qf-dot">.</span></h1>
-  <p>Every plane carries a question people ask about reaching out. Pick one and unfold it — whatever you choose, IEX will help you land in the right place.</p>
+  <p><span class="ln">Every plane carries a question people ask about reaching out.</span><span class="ln">Pick one and unfold it — whatever you choose, IEX will help you</span><span class="ln">land in the right place.</span></p>
+  <div class="loading" id="loading">folding…</div>
 </div>
 <div class="contact">IEX · Office for Institutional Equity and Title IX<br>
   <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
 <div class="hint">scroll ↔ ↕ or drag to wander<br>click a plane to unfold it</div>
-<div class="loading" id="loading">folding planes…</div>
 <div class="peek" id="peek">unfold</div>
 <div class="focus-ring" id="ring"></div>
 
@@ -140,14 +166,15 @@
     if (d) { d.textContent = 'something went wrong: ' + (e.message || e) + ' — try a hard reload (cmd+shift+R)'; d.style.opacity = 1; }
   });
 </script>
-<script src="https://unpkg.com/three@0.137.5/build/three.min.js"></script>
-<script src="lib/paperkit.js"></script>
-<script src="gradients.js"></script>
+<!-- the panel first (it needs nothing from the 3D), then the sky -->
 <script src="questions.js"></script>
 <script src="copy.js"></script>
 <script src="store.js"></script>
 <script src="data.js"></script>
-<script src="garden.js"></script>
 <script src="panel.js"></script>
+<script src="lib/three.min.js"></script>
+<script src="lib/paperkit.js"></script>
+<script src="gradients.js"></script>
+<script src="garden.js"></script>
 </body>
 </html>

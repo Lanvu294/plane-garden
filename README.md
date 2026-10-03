@@ -133,34 +133,66 @@ curl -X DELETE "https://plane-garden.vercel.app/api/questions?id=ID" -H "x-admin
 
 ## The intro: one, then many
 
-One master clock (`intro.t` in `garden.js`) drives the whole opening. Every
-timing is in the `INTRO` constants. Planes use `cubic-bezier(.22,1,.36,1)`;
-text uses `cubic-bezier(.25,.1,.25,1)`. Nothing bounces.
+**The words never wait for the 3D.** The title, subtitle, buttons and footer
+are HTML and fade in by themselves with CSS:
+- title at 0.1 s;
+- subtitle at 0.3 s, lines 100 ms apart;
+- buttons and footer at 0.5 s;
+- each a 400 ms fade with a 5 px rise.
 
-| when (s) | what |
-| --- | --- |
-| 0 – 0.8 | The sky comes up from a washed-out version. The threads fade in left to right (0.1–1.15). The camera starts 3% further back and dollies in until 5.0. |
-| 0.8 – 2.6 | **The first throw.** A plain cream plane (question #01, "What is IEX?") arcs up from below the bottom-left and skims under the title. A soft 40 px mask, driven by the plane's x, uncovers "Questions, folded" in its slipstream (about 1.0–1.3). The full stop lands 120 ms after the words. The plane settles onto its thread, then blooms from cream to its gradient (2.9–3.7). |
-| 2.4 – 3.4 | The subtitle settles line by line: 6 px rise, 500 ms each, 140 ms apart. |
-| 2.9 – ~5.9 | **Others follow.** Every plane in view enters far to near. The gaps shrink geometrically, from 420 ms down to a few ms, with ±15% duration and ±80 ms start jitter. Far planes come out of the haze, scaling up from 0.6. The rest glide in from the nearest edge (bottom ones diagonally) with a damped ±10° roll. Each lands on its live pose, so there's no snap at the handoff. |
-| ~5.1 – 5.9 | The interface arrives last. The buttons drop 4 px into place 100 ms apart, with the footer. The count runs 0 → 50 and finishes as the last plane lands. |
+The panel script loads before the 3D. The font stylesheet doesn't block the
+first paint, so the words can show in Georgia for a moment before Bitter
+arrives.
 
-The exact end (about 5.9 s) depends on how many planes are in view at the
-start.
+**Loading.** The sky textures are drawn in code, not downloaded.
+- **Shared layers:** the paper fibres, grain and cut edge are drawn once, in
+  four variants, and stamped onto each sheet. Drawing them per sheet was
+  ~2.8 s of the old load; it's now ~0.1 s for all 160 sheets.
+- **Order:** the planes in view are folded first, far to near, which is the
+  wave's order.
+- **Start:** as soon as the first 10 are ready and on the GPU (shader compiled,
+  textures uploaded), the wave starts. Each sheet folded after that is
+  uploaded straight away and joins the wave when ready. A plane is never drawn
+  without its textures.
+- **Waiting:** if the planes take more than 1.2 s, a small "folding…" fades in
+  under the subtitle.
+- **three.js** is served from `lib/`, so there's no extra connection.
+- **Timings:** `GARDEN.timings()` (or `?timing` in the URL) reports when the
+  fonts, the first batch and the last plane were ready.
 
-**Skip:** any click, key, scroll or drag catches up over about 0.4 s, and does
-nothing else, so it won't open a plane.
+**The wave** has one clock (`intro.t`), and every timing is in `INTRO`.
+- **Order:** everything in view, far to near.
+- **Pacing:** start times accelerate. The first gap is ~120 ms, shrinking to
+  a few ms by the end, with ±40 ms jitter. The starts span 0.65 s.
+- **Flights:** each takes 0.9 s ±15%, easing out. The wave takes about 1.5 s
+  in all.
+- **Near planes** fly in from beyond the nearest edge on a curve.
+- **Far planes** rise out of the haze: from deeper, scale 0.7 → 1, soft to
+  sharp.
+- **Fades:** the only one is the first 200 ms of each flight.
+- **Arrival:** each plane lands on its live pose, so there's no snap at the
+  handoff. A damped roll wobble then settles within 1.6 s.
+- **Hover:** a plane can be hovered as soon as it lands.
+
+**Skip:** any click, key, scroll or drag on the sky catches up over about
+0.4 s, and does nothing else. Typing in the panel is never caught.
 
 **Other versions:**
-- **Repeat visit in the same session:** 1.2 s of crossfades.
-- **Reduced motion:** a crossfade in order (sky, title, subtitle, planes, UI)
-  with no dolly, flight-in or mask.
+- **Repeat visit in the same session:** the same wave, ~0.8 s.
+- **Reduced motion:** every plane crossfades in place, together, over 500 ms.
 
-**Hover and clicks:** planes take none until the intro ends.
+**Tuning:** add `?introSpeed=0.25` to watch it slowly.
+`GARDEN.intro.replay('full' | 'repeat' | 'reduced')` and `.schedule()` help
+in the browser console.
 
 **Afterwards:**
-- **Legibility:** the title and subtitle stay fixed top-left over a soft haze.
-  Planes passing behind them thin to 35%, and threads thin where they cross.
+- **Legibility:** the title block, the footer and the hint (while it shows)
+  each sit on a soft, edgeless haze. The corners use the sky's own colour
+  down there, which keeps at least 4.5:1 contrast for the text, measured at
+  4.77:1 at the darkest point. Planes passing behind any of them thin to 35%,
+  and threads fade where they cross.
+- **Threads:** always behind every plane. They're drawn first and write no
+  depth. Each fades in at its final opacity once its plane is built.
 - **Dimming:** once you've unfolded something or opened the panel, the
   subtitle drops to 45%. While a sheet or the panel is open, the title block
   dims to 30%.
@@ -179,19 +211,40 @@ All of this eases in and out:
   from wherever it is;
 - it bobs about ±2.5 px;
 - it banks toward the cursor, up to 8° of roll and 5° of pitch;
-- it lifts about 5% nearer, with a soft shadow on the sky behind it;
-- one warm sheen runs along its creases.
+- it lifts about 5% nearer and casts a shadow in its own shape. The shadow
+  is its pieces drawn again a little further back, 4 px right and 8 px down
+  (away from the light), in a darker shade of the sky behind. It's very faint
+  (~15%) and softened by drawing it seven times in a 3 px ring, with a
+  stencil so folded layers don't stack. It comes and goes with the lift;
+- **the wing breath:** both wing creases open about 7° more over 280 ms (a
+  quick lift), then settle to 2.5° above rest over 500 ms (soft, no bounce).
+  This uses the same crease rotations as the unfold. The paper beyond each
+  crease flexes up another 2° toward the tip, 60 ms behind, then relaxes.
+  While caught, the wings breathe ±1° on a 2.5 s cycle. On release they ease
+  back to rest over 400 ms. A quick away-and-back always starts from the
+  current angle.
 
-Every other plane goes about 10% softer. Planes in front of it that overlap it
-turn see-through (55%).
+**Nothing else in the sky changes:** no other plane's colour, opacity or
+material.
+
+**Paper material:** the paper uses one material per plane, fixed for life and
+never switched. It renders as opaque, drawn back to front. The cut edge's
+feather uses alpha-to-coverage, and a plane's overall opacity (arriving, behind
+the title, filtered out) is a constant blend set per draw.
 
 **Hit testing:**
-- The frontmost mesh hit wins, skipping filtered-out and see-through planes.
+- The frontmost mesh hit wins, skipping filtered-out planes.
 - **Intent delay:** a plane needs about 80 ms under the cursor before it
   catches.
-- **Stickiness:** it holds while the cursor stays inside its outline grown by
-  15%, plus a 150 ms grace period. A plane passing in front must also rest
-  80 ms under the cursor to take over.
+- **Stickiness:** it holds while the cursor is on the plane or within 8% of
+  its size from its edge (never the empty sky inside its bounding box), plus
+  a 70 ms grace period. A plane passing in front must also rest 80 ms under
+  the cursor to take over.
+- **Letting go:** the catch, the tag and the shadow all follow the same
+  `hoveredId`, and fade together in about 150 ms. Hover also clears when the
+  pointer leaves the sky, the window loses focus, or the panel or a sheet
+  opens. The tag never shows without a caught plane; if it ever does, a
+  console warning says so.
 - **Release:** it lets go at the screen edge or under the panel.
 
 **Inputs:** one system, four inputs (`hoverSource`):
@@ -201,8 +254,8 @@ turn see-through (55%).
 - **touch:** the first tap catches ("tap to unfold"), the second unfolds, and
   a tap on empty sky lets go.
 
-**Reduced motion:** keeps only the slow-down, the lift shadow and the focus
-haze, as quick fades.
+**Reduced motion:** keeps only the slow-down, the lift and its shadow, as
+quick fades. No wing breath and no bank.
 
 ## How a plane opens
 
