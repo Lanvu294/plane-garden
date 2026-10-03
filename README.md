@@ -131,6 +131,79 @@ heights (peek, half, full). It steps down to peek while you read.
 curl -X DELETE "https://plane-garden.vercel.app/api/questions?id=ID" -H "x-admin-token: $ADMIN_TOKEN"
 ```
 
+## The intro: one, then many
+
+One master clock (`intro.t` in `garden.js`) drives the whole opening. Every
+timing is in the `INTRO` constants. Planes use `cubic-bezier(.22,1,.36,1)`;
+text uses `cubic-bezier(.25,.1,.25,1)`. Nothing bounces.
+
+| when (s) | what |
+| --- | --- |
+| 0 – 0.8 | The sky comes up from a washed-out version. The threads fade in left to right (0.1–1.15). The camera starts 3% further back and dollies in until 5.0. |
+| 0.8 – 2.6 | **The first throw.** A plain cream plane (question #01, "What is IEX?") arcs up from below the bottom-left and skims under the title. A soft 40 px mask, driven by the plane's x, uncovers "Questions, folded" in its slipstream (about 1.0–1.3). The full stop lands 120 ms after the words. The plane settles onto its thread, then blooms from cream to its gradient (2.9–3.7). |
+| 2.4 – 3.4 | The subtitle settles line by line: 6 px rise, 500 ms each, 140 ms apart. |
+| 2.9 – ~5.9 | **Others follow.** Every plane in view enters far to near. The gaps shrink geometrically, from 420 ms down to a few ms, with ±15% duration and ±80 ms start jitter. Far planes come out of the haze, scaling up from 0.6. The rest glide in from the nearest edge (bottom ones diagonally) with a damped ±10° roll. Each lands on its live pose, so there's no snap at the handoff. |
+| ~5.1 – 5.9 | The interface arrives last. The buttons drop 4 px into place 100 ms apart, with the footer. The count runs 0 → 50 and finishes as the last plane lands. |
+
+The exact end (about 5.9 s) depends on how many planes are in view at the
+start.
+
+**Skip:** any click, key, scroll or drag catches up over about 0.4 s, and does
+nothing else, so it won't open a plane.
+
+**Other versions:**
+- **Repeat visit in the same session:** 1.2 s of crossfades.
+- **Reduced motion:** a crossfade in order (sky, title, subtitle, planes, UI)
+  with no dolly, flight-in or mask.
+
+**Hover and clicks:** planes take none until the intro ends.
+
+**Afterwards:**
+- **Legibility:** the title and subtitle stay fixed top-left over a soft haze.
+  Planes passing behind them thin to 35%, and threads thin where they cross.
+- **Dimming:** once you've unfolded something or opened the panel, the
+  subtitle drops to 45%. While a sheet or the panel is open, the title block
+  dims to 30%.
+- **The hint:** it only appears after 2 s with no interaction, and goes for
+  good after the first scroll, drag or click.
+
+**Tuning:** add `?introSpeed=0.25` to watch it slowly. `GARDEN.intro.scrub(t)`,
+`.play()`, `.replay('full' | 'repeat' | 'reduced')`, `.schedule()` and
+`.timings()` help with tuning in the browser console.
+
+## The catch (hover)
+
+A plane under the pointer "catches" it like a breeze, rather than lighting up.
+All of this eases in and out:
+- it slows to a fifth of its speed, on its own clock, so it keeps drifting
+  from wherever it is;
+- it bobs about ±2.5 px;
+- it banks toward the cursor, up to 8° of roll and 5° of pitch;
+- it lifts about 5% nearer, with a soft shadow on the sky behind it;
+- one warm sheen runs along its creases.
+
+Every other plane goes about 10% softer. Planes in front of it that overlap it
+turn see-through (55%).
+
+**Hit testing:**
+- The frontmost mesh hit wins, skipping filtered-out and see-through planes.
+- **Intent delay:** a plane needs about 80 ms under the cursor before it
+  catches.
+- **Stickiness:** it holds while the cursor stays inside its outline grown by
+  15%, plus a 150 ms grace period. A plane passing in front must also rest
+  80 ms under the cursor to take over.
+- **Release:** it lets go at the screen edge or under the panel.
+
+**Inputs:** one system, four inputs (`hoverSource`):
+- **pointer:** shows the cursor tag;
+- **panel row:** same catch, no tag;
+- **keyboard focus:** same catch;
+- **touch:** the first tap catches ("tap to unfold"), the second unfolds, and
+  a tap on empty sky lets go.
+
+**Reduced motion:** keeps only the slow-down, the lift shadow and the focus
+haze, as quick fades.
+
 ## How a plane opens
 
 Every plane opens and closes through the same code, so a fix there reaches

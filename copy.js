@@ -96,7 +96,7 @@ window.QF_COPY = {
     urgent: 'In danger right now? Call 911. For confidential support, Counseling & Psychological Services (CaPS) is at 412-268-2922.'
   },
 
-  sky: { unfold: 'unfold', waiting: 'waiting for IEX', yours: 'your question' },
+  sky: { unfold: 'unfold', tap: 'tap to unfold', waiting: 'waiting for IEX', yours: 'your question' },
 
   ago: { now: 'just now', min: '{n} min ago', hour: '1 hour ago', hours: '{n} hours ago', day: '1 day ago', days: '{n} days ago' }
 };

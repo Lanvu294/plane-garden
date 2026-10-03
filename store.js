@@ -7,10 +7,10 @@
      mode         'browse' | 'ask' | 'sent'
      query        the search text (kept when the panel closes)
      hoveredId    a question id under the pointer, in the panel or the sky
-     hoveredPlane the one plane under the pointer (when hovering the sky):
+     hoveredPlane the one plane caught by the pointer, a tap or keyboard focus:
                   a question flies on several planes, but only the one you
                   point at lights up
-     hoverSource  'panel' | 'sky' | 'key'
+     hoverSource  'pointer' | 'panel' | 'keyboard' | 'touch'
      openId       the question whose plane is unfolded (or unfolding)
      openHint     the plane to use for it, when the sky was clicked
      suggestIds   "others asked something similar" — lifted in the sky

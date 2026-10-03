@@ -176,12 +176,12 @@
   }
   /* hovering or focusing a row lifts its plane in the sky */
   function hoverable(li, id, main) {
-    li.addEventListener('mouseenter', function () { S.set({ hoveredId: id, hoverSource: 'panel' }); });
+    li.addEventListener('mouseenter', function () { S.set({ hoveredId: id, hoveredPlane: null, hoverSource: 'panel' }); });
     li.addEventListener('mouseleave', function () {
       var st = S.get();
       if (st.hoveredId === id && st.hoverSource === 'panel') S.set({ hoveredId: null, hoverSource: null });
     });
-    main.addEventListener('focus', function () { S.set({ hoveredId: id, hoverSource: 'key' }); });
+    main.addEventListener('focus', function () { S.set({ hoveredId: id, hoveredPlane: null, hoverSource: 'keyboard' }); });
   }
 
   /* -------------------------------------------------------------------- ask */
@@ -260,7 +260,7 @@
       var li = el('li'), b = el('button', 'nb-link similar-q'); b.type = 'button';
       b.appendChild(el('span', null, x.q));
       b.addEventListener('click', function () { S.set({ openId: x.id, openHint: null }); });
-      b.addEventListener('mouseenter', function () { S.set({ hoveredId: x.id, hoverSource: 'panel' }); });
+      b.addEventListener('mouseenter', function () { S.set({ hoveredId: x.id, hoveredPlane: null, hoverSource: 'panel' }); });
       b.addEventListener('mouseleave', function () { if (S.get().hoveredId === x.id) S.set({ hoveredId: null }); });
       li.appendChild(b); similarList.appendChild(li);
     });
@@ -438,7 +438,7 @@
     /* the hot row: lifted from the sky or the keyboard */
     Object.keys(rowsA).forEach(function (id) { rowsA[id].li.classList.toggle('hot', st.hoveredId === id); });
     Object.keys(rowsW).forEach(function (id) { rowsW[id].li.classList.toggle('hot', st.hoveredId === id || st.locateId === id); });
-    if (ch.hoveredId && st.hoveredId && st.hoverSource === 'sky' && open && mode === 'browse') {
+    if (ch.hoveredId && st.hoveredId && (st.hoverSource === 'pointer' || st.hoverSource === 'touch') && open && mode === 'browse') {
       var r = rowsA[st.hoveredId] || rowsW[st.hoveredId];
       if (r && r.li.isConnected) r.li.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
     }
@@ -517,7 +517,7 @@
   (function linkLoop() {
     requestAnimationFrame(linkLoop);
     var st = S.get(), id = st.hoveredId, r = id && (rowsA[id] || rowsW[id]);
-    var show = st.panelOpen && st.mode === 'browse' && id && (st.hoverSource === 'panel' || st.hoverSource === 'key') &&
+    var show = st.panelOpen && st.mode === 'browse' && id && (st.hoverSource === 'panel' || st.hoverSource === 'keyboard') &&
       r && r.li.isConnected && window.GARDEN && window.GARDEN.locate && !document.body.classList.contains('reading');
     var at = show ? window.GARDEN.locate(id) : null;
     if (!at) { link.classList.remove('on'); dwell = null; return; }

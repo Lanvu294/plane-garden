@@ -138,7 +138,16 @@
     glow: { value: new T.Color('#FFF1DA') },           // the backlight that wraps turning faces
     ambience: { value: 1 }                             // 1 in the garden, 0 for the sheet being read
   };
-  wall.background = HAZE.skyMap.value;                  // the same sky as the page, fixed to the screen
+  /* the same sky as the page, fixed to the screen — drawn as its own quad so
+     the intro can bring it up from a paler, washed-out version */
+  var skyWash = { value: 0.35 };
+  var bgScene = new T.Scene(), bgCam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  bgScene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.ShaderMaterial({
+    uniforms: { map: HAZE.skyMap, wash: skyWash }, depthTest: false, depthWrite: false,
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }',
+    fragmentShader: 'uniform sampler2D map; uniform float wash; varying vec2 vUv;\n' +
+      'void main() { vec3 c = texture2D( map, vUv ).rgb; gl_FragColor = vec4( mix( c, vec3( 0.965, 0.96, 0.955 ), wash ), 1.0 ); }'
+  })));
 
   function resize() {
     var w = window.innerWidth, h = window.innerHeight;
@@ -409,14 +418,22 @@
        lifted it is (hi), and for a waiting plane how much of its colour has
        bled in (bleed: 0 plain cream, 1 its gradient) */
     m.userData.dim = { value: 0 };
-    m.userData.hi = { value: 0 };
+    m.userData.haze = { value: 0 };          // focus pull: another plane is caught
+    m.userData.occl = { value: 0 };          // in front of the caught plane: see through
+    m.userData.glint = { value: -1 };        // a sheen running along the creases (-1: none)
+    m.userData.creaseMap = { value: null };
+    m.userData.fade = { value: 1 };          // overall opacity: the intro's arrival, and behind the title
     m.userData.bleed = { value: 1 };
     m.userData.creamMap = { value: back };
     m.onBeforeCompile = function (sh) {
       sh.uniforms.backMap = m.userData.backMap;
       sh.uniforms.feather = m.userData.feather;
       sh.uniforms.dimAmt = m.userData.dim;
-      sh.uniforms.hiAmt = m.userData.hi;
+      sh.uniforms.hazeAmt = m.userData.haze;
+      sh.uniforms.occlAmt = m.userData.occl;
+      sh.uniforms.glintPos = m.userData.glint;
+      sh.uniforms.creaseMap = m.userData.creaseMap;
+      sh.uniforms.fade = m.userData.fade;
       sh.uniforms.bleed = m.userData.bleed;
       sh.uniforms.creamMap = m.userData.creamMap;
       sh.uniforms.camNear = CAM_NEAR; sh.uniforms.camFar = CAM_FAR;
@@ -424,7 +441,7 @@
       sh.vertexShader = 'attribute vec2 rank;\nvarying vec2 vRank;\nvarying vec3 vViewP;\n' +
         sh.vertexShader.replace('#include <project_vertex>',
         '#include <project_vertex>\n  vViewP = - mvPosition.xyz;\n  vRank = rank;');
-      sh.fragmentShader = 'uniform sampler2D backMap, creamMap;\nuniform float feather, camNear, camFar, dimAmt, hiAmt, bleed;\nvarying vec2 vRank;\n#define RANK_STEP 0.0004\n' +
+      sh.fragmentShader = 'uniform sampler2D backMap, creamMap, creaseMap;\nuniform float feather, camNear, camFar, dimAmt, hazeAmt, occlAmt, glintPos, bleed, fade;\nvarying vec2 vRank;\n#define RANK_STEP 0.0004\n' +
         'uniform sampler2D skyMap;\nuniform float viewH, hazeNear, hazeFar, hazeAmount, nearFrom, nearTo;\n' +
         'uniform vec3 mist, glow;\nuniform float ambience;\nvarying vec3 vViewP;\n' + sh.fragmentShader
         .replace('#include <map_fragment>',
@@ -434,7 +451,7 @@
           '  float viewD = 1.0 / gl_FragCoord.w;\n' +
           '  float farT = smoothstep( hazeNear, hazeFar, viewD );\n' +
           /* a plane filtered out of view recedes: softer, as if through haze */
-          '  float detailBias = farT * 3.0 + dimAmt * 2.5;\n' +
+          '  float detailBias = farT * 3.0 + dimAmt * 2.5 + hazeAmt * 0.7;\n' +
           '#ifdef USE_MAP\n' +
           '  vec4 texelColor;\n' +
           '  if ( gl_FrontFacing ) texelColor = texture2D( map, vUv, detailBias );\n' +
@@ -494,10 +511,18 @@
              photographed page (only the paper; the sky stays as specified) */
           '  col = ( col - 0.5 ) * 0.94 + 0.5;\n' +
           '  col = mix( vec3( dot( col, vec3( 0.2126, 0.7152, 0.0722 ) ) ), col, 0.9 );\n' +
-          /* lifted (hovered, suggested, found): a touch brighter, and its
-             turning edges catch a warm light */
-          '  col = mix( col, col * 1.06 + vec3( 0.035, 0.03, 0.02 ), hiAmt );\n' +
-          '  col += vec3( 1.0, 0.96, 0.88 ) * rim * 0.55 * hiAmt;\n' +
+          /* focus pull: when another plane is caught, this one goes a little
+             softer — about a tenth less colour and contrast, a breath of sky */
+          '  float lhz = dot( col, vec3( 0.299, 0.587, 0.114 ) );\n' +
+          '  col = mix( col, mix( vec3( lhz ), col, 0.9 ), hazeAmt );\n' +
+          '  col = mix( col, ( col - 0.5 ) * 0.91 + 0.5 + ( skyHere - 0.5 ) * 0.03, hazeAmt );\n' +
+          /* the crease glint: one slow warm sheen running nose to tail along
+             the folds, like light catching creased paper */
+          '  if ( glintPos > -0.5 ) {\n' +
+          '    float cm = texture2D( creaseMap, vUv ).r;\n' +
+          '    float band = exp( -pow( ( vUv.y - glintPos ) / 0.09, 2.0 ) );\n' +
+          '    col += vec3( 1.0, 0.97, 0.9 ) * cm * band * 0.32;\n' +
+          '  }\n' +
           /* filtered out: grey, and washed toward the sky behind */
           '  float ldim = dot( col, vec3( 0.299, 0.587, 0.114 ) );\n' +
           '  col = mix( col, mix( vec3( ldim ), skyHere * 1.02, 0.55 ), dimAmt * 0.8 );\n' +
@@ -511,7 +536,7 @@
           '  float along = ed.x < ed.y ? vUv.y : vUv.x;\n' +
           '  float soft = 1.4 + 0.7 * sin( along * 61.0 + sin( along * 23.0 ) * 2.0 );\n' +
           '  gl_FragColor.a *= mix( 1.0, smoothstep( 0.0, soft, min( ed.x, ed.y ) ), feather );\n' +
-          '  gl_FragColor.a *= 1.0 - 0.85 * dimAmt;\n' +
+          '  gl_FragColor.a *= ( 1.0 - 0.85 * dimAmt ) * ( 1.0 - 0.45 * occlAmt ) * fade;\n' +
           /* pieces lying flat on each other: the one higher in the stack (as
              seen from this face's side) is drawn as if a hair nearer —
              RANK_STEP world units along the line of sight per place in the
@@ -574,8 +599,60 @@
       paperMaterial: new T.MeshLambertMaterial(), lineMaterial: creaseMat
     });
   }
-  /* the filter, the highlight and the colour-bleed, eased per plane */
-  function fxInit(p) { p.fx = { dim: 0, dimT: 0, fwd: 0, fwdT: 0, hi: 0, hiT: 0, at: 0 }; }
+  /* a thread: it thins out where it passes behind the title, so the words
+     always read (TEXT_RECT is the title block, in device pixels) */
+  var TEXT_RECT = { value: new T.Vector4(-1, -1, -1, -1) };
+  function stringMaterial(opacity) {
+    var m = new T.LineBasicMaterial({ color: 0x1f2328, transparent: true, opacity: opacity });
+    m.onBeforeCompile = function (sh) {
+      sh.uniforms.textRect = TEXT_RECT;
+      sh.fragmentShader = 'uniform vec4 textRect;\n' + sh.fragmentShader.replace('#include <premultiplied_alpha_fragment>',
+        '  vec2 fq = gl_FragCoord.xy;\n' +
+        '  float dq = max( max( textRect.x - fq.x, fq.x - textRect.z ), max( textRect.y - fq.y, fq.y - textRect.w ) );\n' +
+        '  gl_FragColor.a *= 1.0 - 0.78 * ( 1.0 - smoothstep( 0.0, 36.0, dq ) );\n' +
+        '#include <premultiplied_alpha_fragment>');
+    };
+    m.customProgramCacheKey = function () { return 'qf-thread'; };
+    return m;
+  }
+  /* which way a folded plane's nose points (in its own frame), so it can fly
+     nose-first */
+  function noseOf(rig, sheet, c) {
+    var nose = null, tip = [0, sheet.h / 2 - 0.05];
+    rig.regions.forEach(function (r) {
+      if (!nose && PK.pointInPoly(tip, r.poly)) nose = new T.Vector3(tip[0], tip[1], 0).applyMatrix4(r.mesh.matrixWorld);
+    });
+    var dir = (nose || new T.Vector3(0, 0, -1).add(c)).clone().sub(c); dir.y = 0;
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+    return dir.normalize();
+  }
+
+  /* the filter, the catch (hover) and the colour-bleed, eased per plane */
+  function fxInit(p) {
+    p.fx = { dim: 0, dimT: 0, fwd: 0, fwdT: 0, at: 0,
+             cat: 0, catT: 0, haze: 0, occl: 0, roll: 0, pitch: 0, glint: -1, caught: false };
+    var waiting = typeof intro !== 'undefined' && intro.phase !== 'done';
+    p.appear = waiting ? 0 : 1; p.threadA = waiting ? 0 : 1; p.cover = 0;
+  }
+  /* where a model's creases are, as a soft mask in sheet space, for the glint */
+  var creaseMaps = {};
+  function creaseMapFor(model, rig, sheet) {
+    if (creaseMaps[model]) return creaseMaps[model];
+    var W = 128, H = Math.round(W * sheet.h / sheet.w), ppi = W / sheet.w;
+    var cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    var c = cv.getContext('2d');
+    c.fillStyle = '#000'; c.fillRect(0, 0, W, H);
+    c.strokeStyle = '#fff'; c.lineWidth = 2.2; c.lineCap = 'round'; c.filter = 'blur(1.2px)';
+    rig.creasePattern().segs.forEach(function (sg) {
+      if (sg.kind === 'edge') return;
+      c.beginPath();
+      c.moveTo((sg.a[0] + sheet.w / 2) * ppi, (sheet.h / 2 - sg.a[1]) * ppi);
+      c.lineTo((sg.b[0] + sheet.w / 2) * ppi, (sheet.h / 2 - sg.b[1]) * ppi);
+      c.stroke();
+    });
+    return (creaseMaps[model] = new T.CanvasTexture(cv));
+  }
+  var byI = {};
 
   function buildPlane(i) {
     /* neighbours should differ: models and gradients are walked at strides */
@@ -592,8 +669,9 @@
     var mat = paperMaterial(front, back);
     var p = { i: i, model: model, gname: gname, item: item, qid: item.id, kind: 'answered', sheet: sheet, rig: rig,
               front: front, back: back, mats: [mat], hi: null };
-    fxInit(p);
+    fxInit(p); byI[p.i] = p;
     dressRig(p, rig, sheet, mat);
+    mat.userData.creaseMap.value = creaseMapFor(model, rig, sheet);
     var box = new T.Box3();
     rig.regions.forEach(function (r) { box.expandByObject(r.mesh); });
     var c = box.getCenter(new T.Vector3());
@@ -618,6 +696,8 @@
     var wrapG = new T.Group();
     wrapG.add(rig.root);
     wrapG.position.copy(attach).negate();
+    p.centerLocal = c.clone().sub(attach);               // the plane's middle, in its tilt frame
+    p.noseDir = noseOf(rig, sheet, c); p.noseAng = Math.atan2(p.noseDir.x, p.noseDir.z);
     var hang = new T.Group();
     /* the string hangs straight from `hang`; any tilt of the plane happens
        below it, about the point the string is tied to */
@@ -638,7 +718,7 @@
     var sg = new T.BufferGeometry().setFromPoints([new T.Vector3(0, 0, 0), new T.Vector3(0, y - CEIL_Y, 0)]);
     /* near strings crisp, far ones faint — the air thins them too */
     var nearness = (z - Z_FAR) / DEPTH;                // 0 farthest .. 1 nearest
-    p.stringMat = new T.LineBasicMaterial({ color: 0x1f2328, transparent: true, opacity: 0.08 + 0.42 * nearness });
+    p.stringMat = stringMaterial(0.08 + 0.42 * nearness);
     p.stringOpacity = p.stringMat.opacity;
     swing.add(new T.Line(sg, p.stringMat));
     wall.add(swing);
@@ -656,7 +736,6 @@
     p.ax = (rnd(i, 12) - 0.5) * 0.01; p.az = (rnd(i, 13) - 0.5) * 0.01;
     p.vx = 0; p.vz = 0;
     p.yaw = (rnd(i, 14) - 0.5) * 0.1; p.vy = 0;
-    p.boost = 0;
     p.hang = hang; p.tilt = tilt; p.wrap = wrapG; p.swing = swing;
     p.x = x; p.y = y; p.z = z; p.hangY = y - CEIL_Y;
     p.len = CEIL_Y - y;                                  // string length: longer swings slower
@@ -721,19 +800,14 @@
     mat.userData.bleed.value = 0;
     var p = { i: 1000 + n, model: model, gname: gname, item: waitingItem(item), qid: item.id, kind: 'waiting', flyer: true,
               mine: mine, sheet: sheet, rig: rig, front: front, back: back, cream: cream, mats: [mat], hi: null };
-    fxInit(p);
+    fxInit(p); byI[p.i] = p;
     dressRig(p, rig, sheet, mat);
+    mat.userData.creaseMap.value = creaseMapFor(model, rig, sheet);
+    p.centerLocal = new T.Vector3();
     var box = new T.Box3();
     rig.regions.forEach(function (r) { box.expandByObject(r.mesh); });
     var c = box.getCenter(new T.Vector3());
-    /* which way the nose points, so it can fly nose-first */
-    var nose = null, tip = [0, sheet.h / 2 - 0.05];
-    rig.regions.forEach(function (r) {
-      if (!nose && PK.pointInPoly(tip, r.poly)) nose = new T.Vector3(tip[0], tip[1], 0).applyMatrix4(r.mesh.matrixWorld);
-    });
-    var dir = (nose || new T.Vector3(0, 0, -1).add(c)).clone().sub(c); dir.y = 0;
-    if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
-    dir.normalize();
+    var dir = noseOf(rig, sheet, c);
     var wrapG = new T.Group(); wrapG.add(rig.root); wrapG.position.copy(c).negate();
     var tilt = new T.Group(); tilt.scale.setScalar(PLANE_SCALE); tilt.add(wrapG);
     var fly = new T.Group(); fly.add(tilt); wall.add(fly);
@@ -755,14 +829,14 @@
     return p;
   }
   var qYaw = new T.Quaternion(), qBank = new T.Quaternion(), qPitch = new T.Quaternion(), Y_AXIS = new T.Vector3(0, 1, 0);
-  function placeFlyer(p, dt, zoff, slow) {
+  function placeFlyer(p, dt, zoff, bob) {
     var P = p.path;
-    P.t += dt * (1 - 0.65 * (slow || 0));
+    P.t += dt;                                            // dt arrives already scaled by the plane's time scale
     var a = P.ph + P.w * P.t;
     var x = P.cx + P.rx * Math.cos(a), z = P.cz + P.rz * Math.sin(a);
     var y = P.cy + 0.6 * Math.sin(P.t * 0.31 + P.ph);
     var vx = -P.rx * Math.sin(a) * P.w, vz = P.rz * Math.cos(a) * P.w, vy = 0.6 * 0.31 * Math.cos(P.t * 0.31 + P.ph);
-    p.fly.position.set(x, y, z + (zoff || 0));
+    p.fly.position.set(x, y + (bob || 0), z + (zoff || 0));
     qYaw.setFromAxisAngle(Y_AXIS, Math.atan2(vx, vz) - p.noseAng);
     qBank.setFromAxisAngle(p.noseDir, 0.22 * (P.w > 0 ? 1 : -1));
     var side = new T.Vector3().crossVectors(p.noseDir, Y_AXIS).normalize();
@@ -776,8 +850,9 @@
   function addListButton(p) {
     var b = document.createElement('button');
     b.textContent = 'Plane ' + (p.i + 1) + ': ' + p.item.q;
-    b.addEventListener('focus', function () { if (!openP) focusPlane(p); });
-    b.addEventListener('blur', function () { ring.classList.remove('on'); });
+    p.listBtn = b;
+    b.addEventListener('focus', function () { if (!openP) { focusPlane(p); setHover(p, 'keyboard'); } });
+    b.addEventListener('blur', function () { if (hov.p === p && S.get().hoverSource === 'keyboard') setHover(null); });
     b.addEventListener('click', function () { S.set({ openId: p.qid, openHint: p }); });
     list.appendChild(b);
   }
@@ -791,7 +866,7 @@
   var dragging = false, downAt = null, moved = 0, last = null;
   canvas.addEventListener('wheel', function (e) {
     e.preventDefault();
-    if (openP) return;
+    if (openP || introBusy()) return;
     var k = (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1) *
             visibleHeight(CAM_Z) / window.innerHeight;
     var dx = e.deltaX, dy = e.deltaY;
@@ -800,11 +875,13 @@
     clampTarget();
   }, { passive: false });
   canvas.addEventListener('pointerdown', function (e) {
+    mouse.kind = e.pointerType;
     downAt = { x: e.clientX, y: e.clientY }; last = { x: e.clientX, y: e.clientY }; moved = 0;
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', function (e) {
-    mouse.x = e.clientX; mouse.y = e.clientY; mouse.fresh = true;
+    mouse.kind = e.pointerType;
+    if (e.pointerType !== 'touch') { mouse.x = e.clientX; mouse.y = e.clientY; mouse.fresh = true; mouse.inside = true; }
     if (!downAt || openP) return;
     var dx = e.clientX - last.x, dy = e.clientY - last.y;
     moved += Math.abs(dx) + Math.abs(dy);
@@ -821,14 +898,25 @@
     if (wasDrag) return;
     if (openP) { closePlane(); return; }
     var hit = pick(e.clientX, e.clientY);
-    if (hit && hit.kind === 'answered') S.set({ openId: hit.qid, openHint: hit });
-    else if (hit) S.set({ panelOpen: true, mode: 'browse', view: 'waiting', locateId: hit.qid });
+    if (e.pointerType === 'touch') {
+      /* no hover on touch: the first tap catches a plane, the second unfolds
+         it, and a tap on empty sky lets go */
+      if (hit && hit === hov.p) { setHover(null); activate(hit); }
+      else if (hit) { setHover(hit, 'touch'); placeTag(e.clientX, e.clientY); }
+      else { setHover(null); if (S.get().panelOpen) S.set({ panelOpen: false }); }
+      return;
+    }
+    if (hit) { setHover(null); activate(hit); }
     else if (S.get().panelOpen) S.set({ panelOpen: false });     // the empty sky puts the panel away
   });
   canvas.addEventListener('pointerleave', function () {
-    if (hovered) { hovered = null; canvas.classList.remove('over'); peek.classList.remove('on'); }
-    if (S.get().hoverSource === 'sky') S.set({ hoveredId: null, hoveredPlane: null, hoverSource: null });
+    mouse.inside = false;
+    if (hov.p && S.get().hoverSource === 'pointer') setHover(null);
   });
+  function activate(p) {
+    if (p.kind === 'answered') S.set({ openId: p.qid, openHint: p });
+    else S.set({ panelOpen: true, mode: 'browse', view: 'waiting', locateId: p.qid });
+  }
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && openP) { e.preventDefault(); closePlane(); return; }
     /* typing in the question notebook, or browsing it: the garden stays put */
@@ -851,17 +939,98 @@
 
   /* ----------------------------------------------------------------- hover */
   var ray = new T.Raycaster(), ndc = new T.Vector2();
-  var mouse = { x: -1, y: -1, fresh: false }, hovered = null;
+  var mouse = { x: -1, y: -1, fresh: false, inside: false, kind: 'mouse' };
   var peek = document.getElementById('peek');
+  /* the frontmost plane actually under the point (the meshes, not boxes),
+     skipping planes the panel has filtered out and the see-through ones
+     standing in front of a caught plane */
   function pick(x, y) {
+    if (introBusy()) return null;
     ndc.set((x / window.innerWidth) * 2 - 1, -(y / window.innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
     var hits = ray.intersectObjects(pickables, false);
     for (var i = 0; i < hits.length; i++) {
       var p = hits[i].object.userData.plane;
-      if (p && p.state !== 'away' && !p.launching && p.fx.dimT < 0.5) return p;
+      if (p && p.state !== 'away' && !p.launching && p.fx.dimT < 0.5 && p.fx.occl < 0.5) return p;
     }
     return null;
+  }
+
+  /* ----------------------------------------------------------- the catch
+     Hovering a plane makes it "catch" the cursor, like a paper plane
+     catching a breeze: it slows (but drifts on), bobs, banks toward you,
+     lifts a little nearer with a soft shadow behind it, and a sheen runs
+     once along its creases; everything else goes very slightly soft, and
+     anything standing in front of it turns see-through. One plane at a time.
+     Four inputs share it — the pointer, a panel row, keyboard focus, a tap —
+     and the store says which (hoverSource).
+
+     For the pointer: a plane must hold the cursor ~80 ms before it catches
+     (so a sweep across the sky doesn't set off a cascade); once caught it
+     keeps the cursor while it's inside the plane's outline grown by 15%,
+     plus 150 ms of grace; a plane passing in front only takes over if the
+     cursor rests on it for the same 80 ms; and a plane drifting to the edge
+     of the screen or under the panel lets go. */
+  var hov = { p: null, cand: null, since: 0, lost: 0, lastPick: 0, blocked: null };
+  var INTENT_MS = 80, GRACE_MS = 150;
+  function setHover(p, source) {
+    if (hov.p === p && (!p || S.get().hoverSource === source)) return;
+    hov.p = p; hov.lost = 0;
+    canvas.classList.toggle('over', !!p && source !== 'keyboard');
+    var tagged = p && (source === 'pointer' || source === 'touch');
+    if (tagged) {
+      peek.textContent = p.kind === 'waiting' ? (D.isMine(p.qid) ? C.sky.yours : C.sky.waiting)
+        : source === 'touch' ? C.sky.tap : C.sky.unfold;
+    }
+    peek.classList.toggle('on', !!tagged);
+    var src = S.get().hoverSource;
+    if (p || src === 'pointer' || src === 'touch' || src === 'keyboard') {
+      S.set({ hoveredId: p ? p.qid : null, hoveredPlane: p ? p.i : null, hoverSource: p ? source : null });
+    }
+  }
+  function placeTag(x, y) { peek.style.left = x + 'px'; peek.style.top = y + 'px'; }
+  var _v = new T.Vector3();
+  /* the plane's outline on screen, as a box (from its own vertices) */
+  function outline(p) {
+    var x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, W = window.innerWidth, H = window.innerHeight;
+    p.rig.regions.forEach(function (r) {
+      var pos = r.mesh.geometry.attributes.position;
+      for (var k = 0; k < pos.count; k++) {
+        _v.fromBufferAttribute(pos, k).applyMatrix4(r.mesh.matrixWorld).project(camera);
+        var x = (_v.x + 1) / 2 * W, y = (1 - _v.y) / 2 * H;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    });
+    return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+  function insideOutline(p, x, y, grow) {
+    var b = outline(p), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    return Math.abs(x - cx) <= (b.x1 - b.x0) / 2 * grow && Math.abs(y - cy) <= (b.y1 - b.y0) / 2 * grow;
+  }
+  function slipping(p) {
+    var d = disc(p), W = window.innerWidth, H = window.innerHeight, m = 24, r = S.get().panelOpen && S.get().panelRect;
+    if (!d.front || d.x < m || d.x > W - m || d.y < m || d.y > H - m) return true;
+    return !!(r && d.x > r.left && d.x < r.left + r.width && d.y > r.top && d.y < r.top + r.height);
+  }
+  function pointerHover(now) {
+    if (introBusy() || openP || dragging || !mouse.inside || mouse.kind === 'touch') return;
+    if (mouse.fresh || now - hov.lastPick > 100) {          // one pick per move (and now and then at rest)
+      mouse.fresh = false; hov.lastPick = now;
+      var c = pick(mouse.x, mouse.y);
+      if (c !== hov.cand) { hov.cand = c; hov.since = now; if (c !== hov.blocked) hov.blocked = null; }
+    }
+    var src = S.get().hoverSource;
+    if (src === 'panel' || src === 'keyboard') return;    // the panel or the keyboard has it
+    var cur = hov.p;
+    if (hov.cand && hov.cand !== cur && hov.cand !== hov.blocked && now - hov.since >= INTENT_MS) {
+      setHover(hov.cand, 'pointer');
+    } else if (cur) {
+      if (hov.cand === cur || insideOutline(cur, mouse.x, mouse.y, 1.15)) hov.lost = 0;
+      else if (!hov.lost) hov.lost = now;
+      else if (now - hov.lost > GRACE_MS) setHover(null);
+    }
+    if (hov.p && slipping(hov.p)) { hov.blocked = hov.p; setHover(null); }
+    if (hov.p) placeTag(mouse.x, mouse.y);
   }
 
   /* ------------------------------------------------------- open and close
@@ -1023,6 +1192,7 @@
   function openPlane(p) {
     if (anim || openP) return;                           // one animation at a time
     openP = p; p.state = 'away';
+    setHover(null);
     S.set({ openId: p.qid });
     peek.classList.remove('on'); ring.classList.remove('on');
     canvas.classList.remove('over');
@@ -1084,6 +1254,9 @@
   /* the store asks for a plane to be opened (a row, a plane, next/prev) or
      put away; one open at a time, so a new one waits for the last to fold */
   S.subscribe(function (st, prev, ch) {
+    if (ch.hoverSource && st.hoverSource !== 'pointer' && st.hoverSource !== 'touch' && hov.p && st.hoveredPlane !== hov.p.i) {
+      hov.p = null; canvas.classList.remove('over'); peek.classList.remove('on');
+    }
     if (ch.openId) {
       var id = st.openId;
       if (id) {
@@ -1097,7 +1270,7 @@
         else openPlane(target);
       } else if (openP) closePlane();
     }
-    if (ch.panelOpen || ch.view || ch.mode || ch.query || ch.hoveredId || ch.hoveredPlane || ch.suggestIds || ch.locateId || ch.dataVersion) {
+    if (ch.panelOpen || ch.view || ch.mode || ch.query || ch.hoveredId || ch.hoveredPlane || ch.hoverSource || ch.suggestIds || ch.locateId || ch.dataVersion) {
       refreshTargets();
     }
     if (ch.locateId && st.locateId) findPlane(st.locateId);
@@ -1164,6 +1337,473 @@
     }
   }
 
+  var qLean = new T.Quaternion(), qPar = new T.Quaternion(), qAdj = new T.Quaternion(), eLean = new T.Euler();
+  /* a caught plane lifts toward you, so it casts a soft shadow on the sky
+     (and anything) behind it: separation by depth, not by brightness */
+  var shadowList = [];
+  var blobTex = (function () {
+    var cv = document.createElement('canvas'); cv.width = cv.height = 128;
+    var c = cv.getContext('2d'), g = c.createRadialGradient(64, 64, 4, 64, 64, 62);
+    g.addColorStop(0, 'rgba(40,32,26,0.9)'); g.addColorStop(0.45, 'rgba(40,32,26,0.45)'); g.addColorStop(1, 'rgba(40,32,26,0)');
+    c.fillStyle = g; c.fillRect(0, 0, 128, 128);
+    return new T.CanvasTexture(cv);
+  })();
+  var shadows = [0, 1, 2].map(function () {
+    var m = new T.Mesh(new T.PlaneGeometry(1, 1),
+      new T.MeshBasicMaterial({ map: blobTex, transparent: true, opacity: 0, depthWrite: false }));
+    m.visible = false; wall.add(m);
+    return m;
+  });
+  function placeShadows() {
+    shadowList.sort(function (a, b) { return b.fx.cat - a.fx.cat; });
+    shadows.forEach(function (m, k) {
+      var p = shadowList[k];
+      if (!p) { m.visible = false; return; }
+      var c = centreOf(p, m.position);
+      c.x += p.size * 0.05; c.y -= p.size * 0.07; c.z -= 1.4;
+      m.scale.set(p.size * 0.95, p.size * 0.7, 1);
+      m.material.opacity = 0.26 * p.fx.cat * (1 - p.fx.dim);
+      m.visible = true;
+    });
+  }
+
+  /* =================================================================== intro
+     "One, then many." The sky comes into focus, one plain cream plane is
+     thrown in and uncovers the title in its slipstream, the words settle,
+     then the others follow — far ones first, faster and faster, until the
+     sky is full and you realise everyone has asked. The interface arrives
+     last. One master clock (intro.t) drives all of it; every timing is in
+     INTRO. Skip it with any click, key, scroll or drag (it catches up over
+     0.4 s); a second visit in a session gets a 1.2 s version; reduced
+     motion gets a plain crossfade. GARDEN.intro has scrub/replay/speed for
+     tuning, and ?introSpeed=0.25 slows the whole thing. */
+  var INTRO = {
+    sky:      { dur: 0.8, wash: 0.35 },                 // the sky coming into focus
+    threads:  { from: 0.1, spread: 0.6, dur: 0.45 },    // left to right
+    dolly:    { amount: 0.03, dur: 5.0 },               // arriving, barely noticed
+    throwIn:  { from: 0.8, dur: 1.8, depth: 12 },       // the first plane
+    bloom:    { delay: 0.3, dur: 0.8 },                 // cream to colour, once it's cruising
+    title:    { feather: 40, lead: 18, dotHold: 0.12, dotDur: 0.28 },
+    subtitle: { from: 2.4, stagger: 0.14, dur: 0.5, rise: 6 },
+    wave:     { from: 2.9, firstGap: 0.42, span: 1.75, dur: 0.95, durJitter: 0.15, startJitter: 0.08, farZ: -12 },
+    wobble:   { deg: 10, decay: 0.42, period: 0.62, life: 1.6 },
+    ui:       { notBefore: 4.6, lead: 0.8, stagger: 0.1, dur: 0.5, drop: 4, countDur: 0.6 },
+    skip:     0.4,
+    repeat:   { sky: 0.5, planes: [0.1, 0.75], title: 0.35, subtitle: 0.5, ui: 0.65, fade: 0.4, stagger: 0.15 },
+    reduced:  { fade: 0.6, sky: 0, title: 0.3, subtitle: 0.6, planes: 0.9, ui: 1.2, stagger: 0.1 }
+  };
+  function bezierEase(x1, y1, x2, y2) {
+    return function (x) {
+      if (x <= 0) return 0; if (x >= 1) return 1;
+      var t = x;
+      for (var i = 0; i < 8; i++) {
+        var u = 1 - t, cx = 3 * x1 * t * u * u + 3 * x2 * t * t * u + t * t * t - x;
+        var dx = 3 * x1 * u * u + 6 * (x2 - x1) * t * u + 3 * (1 - x2) * t * t;
+        if (Math.abs(dx) < 1e-6) break;
+        t = Math.max(0, Math.min(1, t - cx / dx));
+      }
+      var v = 1 - t;
+      return 3 * y1 * t * v * v + 3 * y2 * t * t * v + t * t * t;
+    };
+  }
+  var EASE_PLANE = bezierEase(0.22, 1, 0.36, 1);       // fast entry, decelerating into cruise
+  var EASE_TEXT = bezierEase(0.25, 0.1, 0.25, 1);      // a gentle ease-out
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+  function seeded(i, k) { var x = Math.sin(i * 91.7 + k * 12.3) * 43758.5453; return x - Math.floor(x); }
+
+  var intro = { phase: 'loading', kind: 'full', t: 0, dur: 1, skipRate: 0, speed: 1, paused: false,
+                dolly: INTRO.dolly.amount, reveal: -1e9, dotAt: null, throwP: null, ready: 0, readySince: 0 };
+  (function () {
+    var m = /[?&]introSpeed=([\d.]+)/.exec(location.search);
+    if (m) intro.speed = Math.max(0.05, parseFloat(m[1]) || 1);
+  })();
+  function introBusy() { return intro.phase !== 'done'; }
+
+  var dom = {};
+  function grabDom() {
+    dom.mast = document.querySelector('.masthead');
+    dom.h1 = dom.mast && dom.mast.querySelector('h1');
+    dom.dot = dom.h1 && dom.h1.querySelector('.qf-dot');
+    dom.p = dom.mast && dom.mast.querySelector('p');
+    dom.contact = document.querySelector('.contact');
+    dom.hint = document.querySelector('.hint');
+    dom.btns = Array.prototype.slice.call(document.querySelectorAll('.qdock button'));
+    dom.count = document.querySelector('.qdock .count');
+    /* the subtitle, a line per span, so it can settle line by line */
+    if (dom.p && !dom.p.querySelector('.ln')) {
+      var words = dom.p.textContent.trim().split(/\s+/), spans = [];
+      dom.p.textContent = '';
+      words.forEach(function (w, i) {
+        var sp = document.createElement('span'); sp.textContent = w + (i < words.length - 1 ? ' ' : '');
+        dom.p.appendChild(sp); spans.push(sp);
+      });
+      var lines = [], top = null;
+      spans.forEach(function (sp) {
+        if (top === null || Math.abs(sp.offsetTop - top) > 2) { lines.push([]); top = sp.offsetTop; }
+        lines[lines.length - 1].push(sp.textContent);
+      });
+      dom.p.textContent = '';
+      lines.forEach(function (ws) { var ln = document.createElement('span'); ln.className = 'ln'; ln.textContent = ws.join('').trim(); dom.p.appendChild(ln); });
+    }
+    dom.lines = dom.p ? Array.prototype.slice.call(dom.p.querySelectorAll('.ln')) : [];
+  }
+
+  /* where on screen a world point sits, and the world point at a screen spot
+     and a depth */
+  function toScreen(v) {
+    var w = v.clone().project(camera);
+    return { x: (w.x + 1) / 2 * window.innerWidth, y: (1 - w.y) / 2 * window.innerHeight, front: w.z < 1 };
+  }
+  function toWorld(sx, sy, z) {
+    var d = camera.position.z - z, k = visibleHeight(d) / window.innerHeight;
+    return new T.Vector3(camera.position.x + (sx - window.innerWidth / 2) * k, camera.position.y - (sy - window.innerHeight / 2) * k, z);
+  }
+
+  /* who comes in when, from where */
+  function planIntro(kind) {
+    intro.kind = kind;
+    var W = window.innerWidth, H = window.innerHeight;
+    /* plan with the camera where the intro starts it */
+    camera.position.z = CAM_Z * (1 + (kind === 'full' ? INTRO.dolly.amount : 0));
+    camera.updateMatrixWorld();
+    wall.updateMatrixWorld(true);
+    planes.forEach(function (p) {
+      p.ent = null; p.appear = kind === 'full' ? 0 : 0; p.threadA = 0; p.cover = 0; p.introScale = 1;
+      var c = centreOf(p), sp = toScreen(c);
+      p.restScreen = sp;
+      /* in view if any of it is (its disc, not just its middle), with a margin */
+      var rr = disc(p).r * 1.1 + 24;
+      p.introVisible = sp.front && sp.x + rr > 0 && sp.x - rr < W && sp.y + rr > 0 && sp.y - rr < H;
+      p.threadAt = INTRO.threads.from + clamp01(sp.x / W) * INTRO.threads.spread;
+    });
+    if (kind !== 'full') { intro.dur = kind === 'repeat' ? 1.2 : INTRO.reduced.ui + INTRO.reduced.stagger + INTRO.reduced.fade + 0.05; return; }
+
+    /* the first plane: a hanging one whose place is up and to the right of
+       the title, carrying question #01 */
+    var aim = { x: 0.5 * W, y: 0.32 * H }, best = null, bd = Infinity;
+    planes.forEach(function (p) {
+      if (p.flyer || !p.introVisible || p.kind !== 'answered') return;
+      var sp = p.restScreen;
+      if (sp.x < 0.3 * W || sp.x > 0.72 * W || sp.y < 0.15 * H || sp.y > 0.55 * H || p.z < -8 || p.z > 24) return;
+      var d = Math.hypot(sp.x - aim.x, sp.y - aim.y);
+      if (d < bd) { bd = d; best = p; }
+    });
+    if (!best) planes.forEach(function (p) { if (!best && !p.flyer && p.introVisible) best = p; });
+    var first = D.answered()[0];
+    if (best && first && best.qid !== first.id) swapQuestion(best, planes.filter(function (q) { return q.qid === first.id && !q.flyer; })[0]);
+    intro.throwP = best;
+    if (best) {
+      var T0 = INTRO.throwIn.from, sp0 = best.restScreen, rest = centreOf(best);
+      /* up the left side from below, cresting just under the title, then
+         curving right onto its place */
+      var pts = [[-0.07 * W, 1.1 * H], [0.0 * W, 0.06 * H], [0.2 * W, -0.08 * H]].map(function (q) {
+        return toWorld(q[0], q[1], best.z).sub(rest);
+      });
+      best.ent = { mode: 'throw', t0: T0, dur: INTRO.throwIn.dur, p0: pts[0], p1: pts[1], p2: pts[2], depth: INTRO.throwIn.depth, wob: 1 };
+      best.introCream = creamBack(best.sheet, LOW_PPI, best.i + 51, false);
+      best.mats[0].userData.creamMap.value = best.introCream;
+      best.mats[0].userData.bleed.value = 0;
+    }
+
+    /* the others: everything you can see, far to near, ever faster */
+    var list = planes.filter(function (p) { return p.introVisible && p !== best; })
+      .sort(function (a, b) { return a.z - b.z; });
+    var n = list.length, g0 = INTRO.wave.firstGap, span = INTRO.wave.span;
+    /* gaps shrink geometrically: g0, g0 r, g0 r², … adding up to the span */
+    var lo = 0, hi = 0.999;
+    for (var it = 0; it < 40; it++) {
+      var r = (lo + hi) / 2, sum = n > 1 ? g0 * (1 - Math.pow(r, n - 1)) / (1 - r) : 0;
+      if (sum > span) hi = r; else lo = r;
+    }
+    var rr = lo, at = INTRO.wave.from, last = T0 + INTRO.throwIn.dur;
+    list.forEach(function (p, k) {
+      if (k > 0) at += g0 * Math.pow(rr, k - 1);
+      var t0 = Math.max(INTRO.wave.from, at + (seeded(p.i, 1) - 0.5) * 2 * INTRO.wave.startJitter);
+      var dur = INTRO.wave.dur * (1 + (seeded(p.i, 2) - 0.5) * 2 * INTRO.wave.durJitter);
+      var wob = seeded(p.i, 3) < 0.5 ? -1 : 1;
+      if (p.z < INTRO.wave.farZ) {
+        /* far ones come out of the haze */
+        p.ent = { mode: 'haze', t0: t0, dur: dur * 1.15, wob: 0 };
+      } else {
+        /* the rest glide in from the nearest edge onto their place */
+        var sp = p.restScreen, rest = centreOf(p), rad = disc(p).r;
+        var dl = sp.x, dr = W - sp.x, db = H - sp.y, sx, sy;
+        var slide = (seeded(p.i, 4) - 0.5) * 0.3;
+        if (dl <= dr && dl <= db) { sx = -rad - 40; sy = sp.y + slide * dl + 0.15 * dl; }
+        else if (dr <= db) { sx = W + rad + 40; sy = sp.y + slide * dr + 0.15 * dr; }
+        else { sx = sp.x + (sp.x < W / 2 ? -1 : 1) * (0.45 + Math.abs(slide)) * db; sy = H + rad + 40; }   // diagonally, never straight up
+        var start = toWorld(sx, sy, p.z).sub(rest);
+        var ctrl = start.clone().multiplyScalar(0.45); ctrl.y += start.length() * 0.12;
+        p.ent = { mode: 'edge', t0: t0, dur: dur, p0: start, p1: ctrl, wob: wob };
+      }
+      last = Math.max(last, p.ent.t0 + p.ent.dur);
+    });
+    intro.last = last;
+    intro.uiFrom = Math.max(INTRO.ui.notBefore, last - INTRO.ui.lead);
+    intro.dur = Math.max(last, intro.uiFrom + INTRO.ui.stagger + INTRO.ui.dur, INTRO.dolly.dur) + 0.05;
+  }
+  /* the first plane carries question #01, so the first thing you ever see is
+     also the most natural first click */
+  function swapQuestion(a, b) {
+    if (!a || !b) return;
+    var ia = a.item, ib = b.item, qa = a.qid, qb = b.qid;
+    a.item = ib; a.qid = qb; b.item = ia; b.qid = qa;
+    [a, b].forEach(function (p) {
+      var old = p.front;
+      p.front = frontTexture(p.sheet, p.item, LOW_PPI, p.i + 7);
+      p.mats[0].map = p.front;
+      old.dispose();
+      if (p.listBtn) p.listBtn.textContent = 'Plane ' + (p.i + 1) + ': ' + p.item.q;
+    });
+  }
+
+  var qFl = new T.Quaternion(), qFp = new T.Quaternion(), qRestTmp = new T.Quaternion(), qWob = new T.Quaternion();
+  var vA = new T.Vector3(), vB = new T.Vector3(), vSide = new T.Vector3(), Z_AXIS = new T.Vector3(0, 0, 1);
+  function bez(e, k, out) {
+    var u = 1 - k;
+    if (e.mode === 'throw') {                             // cubic, ending on its place
+      return out.set(0, 0, 0).addScaledVector(e.p0, u * u * u).addScaledVector(e.p1, 3 * u * u * k).addScaledVector(e.p2, 3 * u * k * k);
+    }
+    return out.set(0, 0, 0).addScaledVector(e.p0, u * u).addScaledVector(e.p1, 2 * u * k);
+  }
+  /* one plane's arrival at intro time t */
+  function arrive(p, t) {
+    var e = p.ent;
+    if (!e) { p.appear = intro.kind === 'full' || t >= 0 ? 1 : 0; return; }
+    if (t < e.t0) { p.appear = 0; return; }
+    var u = clamp01((t - e.t0) / e.dur), k = EASE_PLANE(u), tau = t - e.t0;
+    var target = p.flyer ? p.fly : p.hang;
+    if (e.mode === 'haze') {
+      p.appear = EASE_TEXT(u);
+      p.introScale = 0.6 + 0.4 * k;
+      target.position.y -= 1.5 * (1 - k);
+    } else {
+      p.appear = clamp01(u * 5);
+      var off = bez(e, k, vA);
+      if (e.mode === 'throw') off.z += e.depth * (1 - k) * (1 - k);
+      target.position.add(off);
+      /* nose along the way it's moving, settling into its resting pose */
+      /* which way it's heading (a step further along the curve, minus here) */
+      var ahead = bez(e, Math.min(1, k + 0.02), vB).sub(off);
+      if (e.mode === 'throw') ahead.z += e.depth * ((1 - Math.min(1, k + 0.02)) * (1 - Math.min(1, k + 0.02)) - (1 - k) * (1 - k));
+      if (ahead.lengthSq() > 1e-10 && u < 1) {
+        /* nose along the way it's moving (as the flying planes do), easing
+           into its resting pose as it arrives */
+        qFl.setFromAxisAngle(Y_AXIS, Math.atan2(ahead.x, ahead.z) - p.noseAng);
+        var side = vSide.crossVectors(p.noseDir, Y_AXIS).normalize();
+        var climb = Math.max(-0.45, Math.min(0.45, -Math.atan2(ahead.y, Math.hypot(ahead.x, ahead.z) + 1e-6) * 0.45));
+        qFp.setFromAxisAngle(side, climb);
+        qFl.multiply(qFp);
+        if (!p.flyer) qFl.premultiply(qRestTmp.copy(p.swing.quaternion).invert());
+        qRestTmp.copy(target.quaternion);
+        target.quaternion.slerpQuaternions(qFl, qRestTmp, smooth(0.45, 1, k));
+      }
+    }
+    /* a glide steadying after the throw: a damped roll */
+    if (e.wob && tau < INTRO.wobble.life && !reduceMotion) {
+      var a = e.wob * INTRO.wobble.deg * Math.PI / 180 * Math.exp(-tau / INTRO.wobble.decay) * Math.cos(2 * Math.PI * tau / INTRO.wobble.period);
+      a *= 1 - smooth(intro.dur - 0.5, intro.dur, t);       // all settled by the handoff, so nothing jumps
+      qWob.setFromAxisAngle(p.noseDir, a);
+      p.tilt.quaternion.multiply(qWob);
+    }
+  }
+
+  var textBox = null, measureTick = 0;
+  window.addEventListener('resize', function () { measureTick = 0; intro.h1Left = null; });
+  /* set a style only when it changes (writes are cheap; churn isn't) */
+  function setStyle(el, prop, v) { if (el && el['_qf_' + prop] !== v) { el['_qf_' + prop] = v; el.style[prop] = v; } }
+  function measureText() {
+    if (!dom.mast) return;
+    if (measureTick-- > 0) return;
+    measureTick = 20;
+    var a = dom.h1.getBoundingClientRect(), b = dom.p && dom.p.offsetParent ? dom.p.getBoundingClientRect() : a;
+    textBox = { x0: Math.min(a.left, b.left) - 8, y0: a.top - 8, x1: Math.max(a.right, b.right) + 8, y1: Math.max(a.bottom, b.bottom) + 8 };
+    var dpr = renderer.getPixelRatio(), H = window.innerHeight;
+    TEXT_RECT.value.set(textBox.x0 * dpr, (H - textBox.y1) * dpr, textBox.x1 * dpr, (H - textBox.y0) * dpr);
+  }
+
+  /* per frame: the intro (while it runs), and always the planes behind the
+     title thinning out so the words read */
+  function introFrame(dt) {
+    if (!dom.mast) grabDom();
+    if (intro.phase === 'running' && !intro.paused) {
+      var rate = Math.max(intro.speed, intro.skipRate);
+      intro.t = Math.min(intro.dur, intro.t + dt * rate);
+    }
+    var t = intro.t, full = intro.kind === 'full', W = window.innerWidth;
+    measureText();
+    var coverK = 1 - Math.exp(-dt * 2 / 0.25), coverNow = (intro.frame = (intro.frame || 0) + 1) % 2 === 0;
+    var running = intro.phase === 'running' || intro.phase === 'loading';
+    planes.forEach(function (p) {
+      if (intro.phase === 'loading') { p.appear = 0; p.threadA = 0; return; }
+      p.introScale = 1;
+      if (intro.phase === 'running') {
+        if (full) arrive(p, t);
+        else {
+          var a0 = intro.kind === 'repeat' ? INTRO.repeat.planes[0] : INTRO.reduced.planes;
+          var a1 = intro.kind === 'repeat' ? INTRO.repeat.planes[1] : INTRO.reduced.planes + INTRO.reduced.fade;
+          p.appear = EASE_TEXT(clamp01((t - a0) / (a1 - a0)));
+        }
+        p.threadA = full ? EASE_TEXT(clamp01((t - p.threadAt) / INTRO.threads.dur)) : p.appear;
+        if (p.introScale !== 1) p.tilt.scale.multiplyScalar(p.introScale);
+      }
+      /* behind the title: thin out (checked every other frame) */
+      if (!coverNow) return;
+      var cv = 0;
+      if (textBox && p.state !== 'away' && !(intro.phase === 'running' && p === intro.throwP)) {
+        var d = disc(p);
+        if (d.front) {
+          var nx = Math.max(textBox.x0, Math.min(d.x, textBox.x1)), ny = Math.max(textBox.y0, Math.min(d.y, textBox.y1));
+          if (Math.hypot(d.x - nx, d.y - ny) < d.r * 0.55) cv = 1;
+        }
+      }
+      p.cover += (cv - p.cover) * coverK;
+    });
+    if (intro.phase !== 'running') return;
+
+    /* the sky, the threads (above), and the slow dolly */
+    if (full) {
+      skyWash.value = INTRO.sky.wash * (1 - EASE_TEXT(clamp01(t / INTRO.sky.dur)));
+      intro.dolly = INTRO.dolly.amount * (1 - EASE_PLANE(clamp01(t / INTRO.dolly.dur)));
+    } else {
+      var skyDur = intro.kind === 'repeat' ? INTRO.repeat.sky : INTRO.reduced.fade;
+      skyWash.value = INTRO.sky.wash * (1 - EASE_TEXT(clamp01(t / skyDur)));
+      intro.dolly = 0;
+    }
+
+    /* the title */
+    if (dom.h1) {
+      if (full && intro.throwP) {
+        setStyle(dom.h1, 'opacity', '1');
+        if (intro.h1Left == null) {                         // measured once (it's fixed in place)
+          intro.h1Left = dom.h1.getBoundingClientRect().left;
+          intro.dotEnd = dom.dot.offsetLeft + dom.dot.offsetWidth;
+        }
+        var px = toScreen(centreOf(intro.throwP)).x;
+        if (t >= intro.throwP.ent.t0) intro.reveal = Math.max(intro.reveal, px - intro.h1Left + INTRO.title.lead);
+        if (t >= intro.throwP.ent.t0 + intro.throwP.ent.dur) intro.reveal = Math.max(intro.reveal, intro.reveal + dt * 900);
+        var f = INTRO.title.feather, rv = Math.max(-2 * f, intro.reveal);
+        var mask = 'linear-gradient(90deg, #000 ' + (rv - f) + 'px, transparent ' + rv + 'px)';
+        setStyle(dom.h1, 'webkitMaskImage', mask); setStyle(dom.h1, 'maskImage', mask);
+        /* the full stop lands last, after a breath */
+        var dotEnd = intro.dotEnd;
+        if (intro.dotAt === null && rv - f >= dotEnd) intro.dotAt = t + INTRO.title.dotHold;
+        var dk = intro.dotAt === null ? 0 : EASE_TEXT(clamp01((t - intro.dotAt) / INTRO.title.dotDur));
+        setStyle(dom.dot, 'opacity', dk.toFixed(3));
+        setStyle(dom.dot, 'transform', 'translateY(' + (-3 * (1 - dk)).toFixed(2) + 'px)');
+      } else {
+        var ta = intro.kind === 'repeat' ? INTRO.repeat.title : INTRO.reduced.title, td = intro.kind === 'repeat' ? INTRO.repeat.fade : INTRO.reduced.fade;
+        setStyle(dom.h1, 'opacity', EASE_TEXT(clamp01((t - ta) / td)).toFixed(3));
+      }
+    }
+    /* the subtitle, line by line */
+    dom.lines.forEach(function (ln, i) {
+      var from, dur, rise;
+      if (full) { from = INTRO.subtitle.from + i * INTRO.subtitle.stagger; dur = INTRO.subtitle.dur; rise = INTRO.subtitle.rise; }
+      else if (intro.kind === 'repeat') { from = INTRO.repeat.subtitle; dur = INTRO.repeat.fade; rise = 0; }
+      else { from = INTRO.reduced.subtitle; dur = INTRO.reduced.fade; rise = 0; }
+      var k = EASE_TEXT(clamp01((t - from) / dur));
+      setStyle(ln, 'opacity', k.toFixed(3));
+      setStyle(ln, 'transform', rise ? 'translateY(' + (rise * (1 - k)).toFixed(2) + 'px)' : '');
+    });
+    if (dom.p) setStyle(dom.p, 'opacity', '0.72');
+    /* the interface, last */
+    var uiFrom = full ? intro.uiFrom : intro.kind === 'repeat' ? INTRO.repeat.ui : INTRO.reduced.ui;
+    var uiDur = full ? INTRO.ui.dur : intro.kind === 'repeat' ? INTRO.repeat.fade : INTRO.reduced.fade;
+    var uiStag = full ? INTRO.ui.stagger : intro.kind === 'repeat' ? INTRO.repeat.stagger : INTRO.reduced.stagger;
+    if (!dom.btns.length) dom.btns = Array.prototype.slice.call(document.querySelectorAll('.qdock button'));
+    var dock = document.querySelector('.qdock');
+    setStyle(dock, 'opacity', '1');
+    dom.btns.forEach(function (b, i) {
+      var k = EASE_TEXT(clamp01((t - uiFrom - i * uiStag) / uiDur));
+      setStyle(b, 'opacity', k.toFixed(3));
+      setStyle(b, 'transform', full ? 'translateY(' + (-INTRO.ui.drop * (1 - k)).toFixed(2) + 'px)' : '');
+    });
+    setStyle(dom.contact, 'opacity', (0.7 * EASE_TEXT(clamp01((t - uiFrom) / uiDur))).toFixed(3));
+    if (!dom.count) dom.count = document.querySelector('.qdock .count');
+    if (dom.count) {
+      var N = D.answered().length;
+      if (full) {
+        var c0 = intro.last - INTRO.ui.countDur;
+        var cn = String(Math.round(N * EASE_TEXT(clamp01((t - c0) / INTRO.ui.countDur))));
+        if (dom.count.textContent !== cn) dom.count.textContent = cn;
+      } else if (dom.count.textContent !== String(N)) dom.count.textContent = String(N);
+    }
+    /* the first plane takes its colour, like ink soaking in */
+    var tp = intro.throwP;
+    if (full && tp && tp.introCream) {
+      var b0 = tp.ent.t0 + tp.ent.dur + INTRO.bloom.delay;
+      tp.mats[0].userData.bleed.value = EASE_TEXT(clamp01((t - b0) / INTRO.bloom.dur));
+    }
+    if (intro.t >= intro.dur) finishIntro();
+  }
+
+  function startIntro() {
+    var kind = 'full';
+    try { if (sessionStorage.getItem('qf-intro-seen')) kind = 'repeat'; } catch (e) {}
+    if (reduceMotion) kind = 'reduced';
+    grabDom();
+    planIntro(kind);
+    intro.t = 0; intro.skipRate = 0; intro.reveal = -1e9; intro.dotAt = null;
+    intro.phase = 'running';
+    try { sessionStorage.setItem('qf-intro-seen', '1'); } catch (e) {}
+  }
+  function skipIntro() {
+    if (intro.phase !== 'running') return;
+    intro.paused = false;
+    intro.skipRate = Math.max(intro.speed, (intro.dur - intro.t) / INTRO.skip);
+  }
+  function finishIntro() {
+    intro.phase = 'done'; intro.t = intro.dur; intro.dolly = 0; skyWash.value = 0;
+    planes.forEach(function (p) { p.appear = 1; p.threadA = 1; p.ent = null; p.introScale = 1; });
+    var tp = intro.throwP;
+    if (tp && tp.introCream) {
+      tp.mats[0].userData.bleed.value = 1; tp.mats[0].userData.creamMap.value = tp.back;
+      tp.introCream.dispose(); tp.introCream = null;
+    }
+    document.body.classList.remove('intro');
+    function clear(el) {
+      if (!el) return;
+      el.style.cssText = '';
+      Object.keys(el).forEach(function (k) { if (k.indexOf('_qf_') === 0) delete el[k]; });
+    }
+    [dom.h1, dom.dot, dom.p, dom.contact, document.querySelector('.qdock')].concat(dom.lines, dom.btns).forEach(clear);
+    if (dom.count) dom.count.textContent = String(D.answered().length);
+    armHint();
+  }
+  /* the hint: only after two quiet seconds, and never again once you've
+     scrolled, dragged or clicked */
+  var hintState = { interacted: false, timer: null };
+  function armHint() {
+    if (hintState.interacted || !dom.hint) return;
+    hintState.timer = setTimeout(function () { if (!hintState.interacted) dom.hint.classList.add('show'); }, 2000);
+  }
+  function interacted() {
+    if (hintState.interacted) return;
+    hintState.interacted = true;
+    clearTimeout(hintState.timer);
+    if (dom.hint) dom.hint.classList.remove('show');
+  }
+  /* any click, key, scroll or drag during the intro fast-forwards it (and
+     does nothing else) */
+  var swallowUp = false;
+  ['pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(function (type) {
+    window.addEventListener(type, function (e) {
+      if (intro.phase === 'running') {
+        skipIntro();
+        if (type === 'pointerdown' || type === 'touchstart') swallowUp = true;
+        if (type === 'wheel' || type === 'keydown') e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (intro.phase === 'done' && (type === 'pointerdown' || type === 'wheel') && e.target === canvas) interacted();
+    }, { capture: true, passive: false });
+  });
+  window.addEventListener('pointerup', function (e) {
+    if (swallowUp) { swallowUp = false; e.stopImmediatePropagation(); }
+  }, true);
+  S.subscribe(function (st) { if (st.openId || st.panelOpen) document.body.classList.add('oriented'); });
+
   /* -------------------------------------------------------- the live filter
      Whatever the panel shows is also what the sky shows. Planes that don't
      match recede — fade, grey, soften, drift back — but keep their places
@@ -1171,15 +1811,26 @@
      there over about 400 ms, starting a few ms after its neighbour to the
      left, so a change ripples across the sky rather than snapping. */
   var FX_TAU = 0.12, BLEED_S = 2.6;
+  function centreOf(p, out) {
+    return p.tilt.localToWorld((out || new T.Vector3()).copy(p.centerLocal));
+  }
   function screenOf(p) {
-    var v = new T.Vector3(p.x, p.flyer ? p.y : p.y, p.z).project(camera);
+    var v = centreOf(p).project(camera);
     return { x: (v.x + 1) / 2 * window.innerWidth, y: (1 - v.y) / 2 * window.innerHeight, front: v.z < 1 };
+  }
+  /* a plane on screen as a disc: centre, radius, and how far from the eye */
+  function disc(p) {
+    var w = centreOf(p, _v), dist = camera.position.distanceTo(w);
+    w.project(camera);
+    var H = window.innerHeight;
+    return { x: (w.x + 1) / 2 * window.innerWidth, y: (1 - w.y) / 2 * H, front: w.z < 1, dist: dist,
+             r: p.size * 0.5 * H / visibleHeight(dist) };
   }
   /* A question flies on several planes, but a highlight is always one plane:
      the one under the pointer, or for a row, a suggestion or a find, the copy
      nearest the middle of what you can see (one in view beats one that
      isn't). The dotted line, the pulse and the pan all use that same plane. */
-  var repOf = {};
+  var repOf = {}, primaryP = null;
   function bestPlane(id) {
     var a = availRect(), cx = (a.x0 + a.x1) / 2, cy = (a.y0 + a.y1) / 2, best = null, bd = Infinity;
     planes.forEach(function (p) {
@@ -1196,10 +1847,12 @@
     var res = (f.view === 'all' && !f.query) ? null : D.match(f.view, f.query);
     var ids = res ? res.ids : null, sug = st.suggestIds || [];
     var lit = {};
-    repOf = {};
-    function mark(id) { var p = bestPlane(id); if (p) { repOf[id] = p; lit[p.i] = true; } }
-    if (st.hoverSource === 'sky' && st.hoveredPlane != null) lit[st.hoveredPlane] = true;
-    else if (st.hoveredId) mark(st.hoveredId);
+    repOf = {}; primaryP = null;
+    function mark(id) { var p = bestPlane(id); if (p) { repOf[id] = p; lit[p.i] = true; } return p; }
+    var src = st.hoverSource;
+    if (st.hoveredPlane != null && (src === 'pointer' || src === 'touch' || src === 'keyboard')) primaryP = byI[st.hoveredPlane] || null;
+    else if (st.hoveredId) primaryP = mark(st.hoveredId);
+    if (primaryP) lit[primaryP.i] = true;
     sug.forEach(mark);
     if (st.locateId) mark(st.locateId);
     planes.forEach(function (p) {
@@ -1210,7 +1863,7 @@
         p.fx.at = reduceMotion ? 0 : now + Math.max(0, Math.min(1, x)) * 160;
       }
       p.fx.dimT = dimT; p.fx.fwdT = fwdT;
-      p.fx.hiT = lit[p.i] ? 1 : 0;
+      p.fx.catT = lit[p.i] ? 1 : 0;
     });
   }
   /* bring a question's plane into view (the panel may cover part of it) and
@@ -1343,22 +1996,17 @@
     var dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
     var k = 1 - Math.pow(0.0008, dt);
     cam.x += (cam.tx - cam.x) * k; cam.y += (cam.ty - cam.y) * k;
-    camera.position.set(cam.x, cam.y, CAM_Z);
+    camera.position.set(cam.x, cam.y, CAM_Z * (1 + intro.dolly));
     camera.quaternion.set(0, 0, 0, 1);
     camera.updateMatrixWorld();
 
-    /* hover: who is under the pointer */
-    if (mouse.fresh && !openP && !dragging) {
-      mouse.fresh = false;
-      var h = pick(mouse.x, mouse.y);
-      if (h !== hovered) {
-        if (h && !reduceMotion && !h.flyer) { h.vy += 0.05 * (Math.random() < 0.5 ? -1 : 1); h.vx += 0.004; }  // brushed
-        hovered = h; canvas.classList.toggle('over', !!h); peek.classList.toggle('on', !!h);
-        if (h) peek.textContent = h.kind === 'waiting' ? (D.isMine(h.qid) ? C.sky.yours : C.sky.waiting) : C.sky.unfold;
-        if (h || S.get().hoverSource === 'sky') S.set({ hoveredId: h ? h.qid : null, hoveredPlane: h ? h.i : null, hoverSource: h ? 'sky' : null });
-      }
-      if (h) { peek.style.left = mouse.x + 'px'; peek.style.top = mouse.y + 'px'; }
-    }
+    pointerHover(now);
+    /* the caught plane, and where it sits on screen: the others go a touch
+       soft, and any standing in front of it and overlapping it turn
+       see-through, so it's never buried */
+    var prim = primaryP && primaryP.state !== 'away' && !primaryP.launching ? primaryP : null;
+    var pd = prim ? disc(prim) : null;
+    var st0 = S.get(), pointerLean = prim && (st0.hoverSource === 'pointer' || st0.hoverSource === 'touch');
 
     /* The breeze is a smooth field that drifts across the cluster and swells
        and fades over tens of seconds. Each plane responds as a real hanging
@@ -1369,46 +2017,81 @@
     var s = now / 1000;
     var gust = 0.45 + 0.3 * Math.sin(s * 0.071) + 0.25 * Math.sin(s * 0.029 + 1.1);
     var sub = Math.max(1, Math.ceil(dt / (1 / 120))), h = dt / sub, G = 386;    // in/s^2
-    var fxK = reduceMotion ? 1 : 1 - Math.exp(-dt / FX_TAU), lid = S.get().locateId;
+    var fxK = reduceMotion ? 1 : 1 - Math.exp(-dt / FX_TAU);
+    var quick = 1 - Math.exp(-dt / 0.06);
+    var hazeK = reduceMotion ? quick : 1 - Math.exp(-dt / 0.13);
+    shadowList.length = 0;
     for (var i = 0; i < planes.length; i++) {
       var p = planes[i];
-      p.boost += ((p === hovered || p === focused ? 1 : 0) - p.boost) * Math.min(1, dt * 3);
-      /* the filter and the highlight, eased toward their targets (after a
-         short per-plane delay, so a change ripples across the sky) */
+      /* the filter, eased toward its target (after a short per-plane delay,
+         so a change ripples across the sky) */
       var fx = p.fx;
       if (now >= fx.at) { fx.dim += (fx.dimT - fx.dim) * fxK; fx.fwd += (fx.fwdT - fx.fwd) * fxK; }
-      fx.hi += (fx.hiT - fx.hi) * fxK;
+      /* the catch: in over ~300 ms, out over ~600 ms */
+      fx.cat += (fx.catT - fx.cat) * (reduceMotion ? quick : 1 - Math.exp(-dt / (fx.catT > fx.cat ? 0.1 : 0.2)));
+      if (fx.catT && !fx.caught) { fx.caught = true; if (!reduceMotion) fx.glint = 0; }
+      if (!fx.catT) fx.caught = false;
+      if (fx.glint >= 0) { fx.glint += dt / 0.7; if (fx.glint >= 1) fx.glint = -1; }
+      var hazeT = prim && fx.catT < 0.5 ? 1 : 0, occlT = 0;
+      if (prim && p !== prim && p.state !== 'away') {
+        var d = disc(p);
+        if (d.front && d.dist < pd.dist - 0.5 && Math.hypot(d.x - pd.x, d.y - pd.y) < (d.r + pd.r) * 0.72) occlT = 1;
+      }
+      fx.haze += (hazeT - fx.haze) * hazeK;
+      fx.occl += (occlT - fx.occl) * hazeK;
+      /* bank toward the cursor (or, from the panel, a gentle lean its way) */
+      var rollT = 0, pitchT = 0;
+      if (p === prim && !reduceMotion) {
+        if (pointerLean) {
+          var dd = pd, ux = Math.max(-1, Math.min(1, (mouse.x - dd.x) / Math.max(dd.r, 20)));
+          var uy = Math.max(-1, Math.min(1, (mouse.y - dd.y) / Math.max(dd.r, 20)));
+          rollT = -ux * 8 * Math.PI / 180; pitchT = uy * 5 * Math.PI / 180;
+        } else rollT = -4 * Math.PI / 180;
+      }
+      var leanK = 1 - Math.exp(-dt / 0.15);
+      fx.roll += (rollT * fx.cat - fx.roll) * leanK; fx.pitch += (pitchT * fx.cat - fx.pitch) * leanK;
+      var ts = 1 - 0.8 * fx.cat;                          // its own clock: 20% when caught
+      var dist = CAM_Z - p.z;
+      var lift = fx.cat * 0.05 * dist;                    // ~5% bigger on screen
+      var bob = reduceMotion ? 0 : Math.sin(now / 1000 * Math.PI) * 2.5 * visibleHeight(dist) / window.innerHeight * fx.cat;
+      if (fx.cat > 0.02 && p.state !== 'away' && !p.launching) shadowList.push(p);
       if (p.bleeding) {
         p.bleed = Math.min(1, p.bleed + dt / BLEED_S);
         p.mats[0].userData.bleed.value = smooth(0, 1, p.bleed);
         if (p.bleed >= 1) p.bleeding = false;
       }
       var away = p.state === 'away' || p.launching;
-      var pulse = lid && repOf[lid] === p && !reduceMotion ? 0.7 + 0.3 * Math.sin(now / 170) : 1;
-      p.mats[0].userData.dim.value = away ? 0 : fx.dim;
-      p.mats[0].userData.hi.value = away ? 0 : fx.hi * pulse;
-      var faded = !away && fx.dim > 0.01;
+      var u = p.mats[0].userData;
+      u.dim.value = away ? 0 : fx.dim;
+      u.haze.value = away ? 0 : fx.haze;
+      u.occl.value = away ? 0 : fx.occl;
+      u.glint.value = away || fx.glint < 0 ? -1 : -0.2 + 1.4 * smooth(0, 1, fx.glint);
+      var fadeV = away ? 1 : (p.appear == null ? 1 : p.appear) * (1 - 0.65 * (p.cover || 0));
+      u.fade.value = fadeV;
+      var faded = !away && (fx.dim > 0.01 || fx.occl > 0.01 || fadeV < 0.999);
       if (faded !== p.mats[0].transparent) { p.mats[0].transparent = faded; p.mats[0].alphaToCoverage = !faded; }
-      var zoff = -7 * fx.dim + 1.2 * fx.fwd + 2.2 * fx.hi, sc = 1 - 0.1 * fx.dim + 0.05 * fx.hi;
+      var zoff = -7 * fx.dim + 1.2 * fx.fwd + lift, sc = 1 - 0.1 * fx.dim;
+      var leaning = Math.abs(fx.roll) + Math.abs(fx.pitch) > 1e-4;
+      if (leaning) qLean.setFromEuler(eLean.set(fx.pitch, 0, fx.roll));
       if (p.flyer) {
         if (!p.launching) {
-          placeFlyer(p, reduceMotion ? 0 : dt, zoff, fx.hi);
+          placeFlyer(p, reduceMotion ? 0 : dt * ts, zoff, bob);
+          if (leaning) p.fly.quaternion.premultiply(qLean);
           if (!away) p.tilt.scale.setScalar(PLANE_SCALE * sc);
         }
         continue;
       }
       p.swing.position.z = p.z + zoff;
+      p.hang.position.set(0, p.hangY + bob, 0);              // set whole every frame (the intro adds to it)
       if (!away) p.tilt.scale.setScalar(PLANE_SCALE * sc);
-      if (p.stringMat) p.stringMat.opacity = p.stringOpacity * (1 - 0.8 * fx.dim);
+      if (p.stringMat) p.stringMat.opacity = p.stringOpacity * (1 - 0.8 * fx.dim) * (p.threadA == null ? 1 : p.threadA);
       if (reduceMotion) {
-        p.hang.rotation.y = p.yaw0; p.tilt.rotation.x = p.pitch; p.tilt.rotation.z = p.roll;
+        p.hang.rotation.set(0, p.yaw0, 0); p.tilt.rotation.set(p.pitch, 0, p.roll);
         continue;
       }
-      /* a lifted plane is held a little stiller, so it's easy to find */
-      var calm = 1 - 0.7 * fx.hi;
-      var wx = calm * gust * (0.6 * Math.sin(s * 0.35 - p.x * 0.03 + 0.2) +
+      var wx = gust * (0.6 * Math.sin(s * 0.35 - p.x * 0.03 + 0.2) +
                        0.4 * Math.sin(s * 0.83 - p.x * 0.05 + p.z * 0.02 + 1.3));
-      var wz = calm * gust * (0.5 * Math.sin(s * 0.29 - p.x * 0.025 + 2.1) +
+      var wz = gust * (0.5 * Math.sin(s * 0.29 - p.x * 0.025 + 2.1) +
                        0.3 * Math.sin(s * 0.71 + p.z * 0.04 + 0.6));
       var wp = Math.sqrt(G / Math.max(p.len, 4)), cp = 2 * 0.05 * wp;          // pendulum
       var tx = 0.018 * wx, tz = 0.014 * wz;                                   // where the wind holds it
@@ -1417,29 +2100,35 @@
       /* a flat sheet turning edge-on through air is heavily damped: it eases
          round and settles rather than swinging back and forth */
       var wt = p.tw, ct = 2 * 0.45 * wt;
+      /* a caught plane runs on its own slower clock — it keeps moving, from
+         wherever it is, just at a fifth of the pace */
+      var hs = h * ts;
       for (var k = 0; k < sub; k++) {
-        p.vx += (-wp * wp * (p.ax - tx) - cp * p.vx) * h; p.ax += p.vx * h;
-        p.vz += (-wp * wp * (p.az - tz) - cp * p.vz) * h; p.az += p.vz * h;
-        p.vy += (-wt * wt * (p.yaw - ty) - ct * p.vy) * h; p.yaw += p.vy * h;
+        p.vx += (-wp * wp * (p.ax - tx) - cp * p.vx) * hs; p.ax += p.vx * hs;
+        p.vz += (-wp * wp * (p.az - tz) - cp * p.vz) * hs; p.az += p.vz * hs;
+        p.vy += (-wt * wt * (p.yaw - ty) - ct * p.vy) * hs; p.yaw += p.vy * hs;
       }
       if (!isFinite(p.ax + p.az + p.yaw + p.vx + p.vz + p.vy)) { p.ax = p.az = p.yaw = p.vx = p.vz = p.vy = 0; }
       p.swing.rotation.z = -p.ax;
       p.swing.rotation.x = p.az;
       if (p.state === 'away') continue;
-      p.hang.rotation.y = p.yaw0 + p.yaw;
-      p.tilt.rotation.x = p.pitch;
-      p.tilt.rotation.z = p.roll;
+      /* every angle, every frame: the bank and the intro write into these
+         rotations, and a leftover axis would feed back next frame */
+      p.hang.rotation.set(0, p.yaw0 + p.yaw, 0);
+      p.tilt.rotation.set(p.pitch, 0, p.roll);
+      if (leaning) {
+        /* the bank is in screen space: turn it into the tilt's own frame */
+        p.hang.getWorldQuaternion(qPar);
+        qAdj.copy(qPar).invert().multiply(qLean).multiply(qPar);
+        p.tilt.quaternion.premultiply(qAdj);
+      }
     }
-
-    /* keyboard focus ring around the focused plane */
-    if (focused && document.activeElement && document.activeElement.parentNode === list && !openP) {
-      var v = focused.hang.getWorldPosition(new T.Vector3()); v.y -= 3; v.project(camera);
-      var px = (v.x + 1) / 2 * window.innerWidth, py = (1 - v.y) / 2 * window.innerHeight;
-      var r = (focused.size / visibleHeight(CAM_Z)) * window.innerHeight * 0.55;
-      ring.style.left = (px - r) + 'px'; ring.style.top = (py - r) + 'px';
-      ring.style.width = ring.style.height = (2 * r) + 'px';
-      ring.classList.add('on');
+    if (intro.phase === 'ready') {
+      intro.ready = dt < 0.03 ? intro.ready + 1 : 0;
+      if (intro.ready >= 4 || now - intro.readySince > 900) startIntro();
     }
+    introFrame(dt);
+    placeShadows();
 
     runAnim(now);
     if (openP && !anim) {
@@ -1466,6 +2155,7 @@
     renderer.setRenderTarget(null);
     renderer.clear();
     HAZE.ambience.value = 1;
+    renderer.render(bgScene, bgCam);
     renderer.render(wall, camera);
     if (dimMat.opacity > 0.001) renderer.render(dimScene, dimCam);
     renderer.clearDepth();
@@ -1515,6 +2205,7 @@
         D.waiting().forEach(buildWaitingPlane);
         refreshTargets();
         loading.classList.add('done');
+        intro.phase = 'ready'; intro.readySince = performance.now();
         window.GARDEN = { planes: planes, open: openPlane, close: closePlane, camera: camera, shadow: shadow,
           /* where a question's plane is on screen, for the panel's pointer line */
           locate: locate,
@@ -1522,6 +2213,35 @@
              and throw it into the holding pattern; resolves when it lands */
           launch: launch,
           isOpen: function () { return !!openP; },
+          /* for tuning the intro: GARDEN.intro.scrub(2.1), .replay('full'), .speed = 0.25 */
+          intro: {
+            get t() { return intro.t; }, get dur() { return intro.dur; }, get phase() { return intro.phase; },
+            get kind() { return intro.kind; }, get speed() { return intro.speed; }, set speed(v) { intro.speed = v; },
+            scrub: function (t) {
+              intro.paused = true; intro.t = Math.max(0, Math.min(intro.dur, t));
+              intro.reveal = -1e9; intro.dotAt = null;          // re-derived from where the plane is now
+              var tp = intro.throwP;
+              if (tp && tp.ent && intro.t > tp.ent.t0 + tp.ent.dur) intro.dotAt = 0;   // long since landed
+            },
+            play: function () { intro.paused = false; },
+            skip: skipIntro,
+            replay: function (kind) {
+              document.body.classList.add('intro');
+              planes.forEach(function (p) { p.appear = 0; p.threadA = 0; });
+              intro.phase = 'running'; intro.paused = false;
+              planIntro(kind || 'full');
+              if (intro.kind === 'full' && intro.throwP) {
+                intro.throwP.mats[0].userData.bleed.value = 0;
+              }
+              intro.t = 0; intro.skipRate = 0; intro.reveal = -1e9; intro.dotAt = null; skyWash.value = INTRO.sky.wash;
+            },
+            schedule: function () {
+              return planes.filter(function (p) { return p.ent; }).map(function (p) {
+                return { i: p.i, z: +p.z.toFixed(1), mode: p.ent.mode, t0: +p.ent.t0.toFixed(3), dur: +p.ent.dur.toFixed(3) };
+              }).sort(function (a, b) { return a.t0 - b.t0; });
+            },
+            timings: function () { return { dur: intro.dur, last: intro.last, uiFrom: intro.uiFrom, kind: intro.kind }; }
+          },
           /* for checking: the renderer and scenes, read-only use */
           _debug: { renderer: renderer, stage: stage, wall: wall,
             tick: function () { runAnim(performance.now()); },

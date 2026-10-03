@@ -34,24 +34,41 @@
   #stage.dragging { cursor: grabbing; }
   #stage.over { cursor: pointer; }
 
-  .masthead { position: fixed; left: 28px; top: 22px; pointer-events: none; max-width: 520px; }
+  .masthead { position: fixed; left: 28px; top: 22px; pointer-events: none; max-width: 520px; z-index: 2;
+    transition: opacity .5s; }
+  /* legibility without a box: a soft, edgeless haze of sky behind the words */
+  .masthead::before { content: ''; position: absolute; left: -140px; top: -110px; right: -160px; bottom: -120px; z-index: -1;
+    background: radial-gradient(ellipse 60% 55% at 38% 45%, rgba(178, 202, 233, .7) 0%, rgba(178, 202, 233, .5) 38%,
+      rgba(178, 202, 233, .18) 66%, rgba(178, 202, 233, 0) 100%); pointer-events: none; }
+  .masthead h1 .qf-dot { display: inline-block; }
+  .masthead p .ln { display: block; white-space: nowrap; }
   .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 700; font-size: 34px;
     line-height: 1.05; margin: 0 0 10px; letter-spacing: -0.01em; }
-  .masthead p { margin: 0; font-size: 12px; line-height: 1.6; opacity: .72; max-width: 360px; }
+  .masthead p { margin: 0; font-size: 12px; line-height: 1.6; opacity: .72; max-width: 360px; transition: opacity .8s; }
+  /* once you've unfolded something or opened the panel, the subtitle has done its job */
+  body.oriented .masthead p { opacity: .45; }
 
+  /* the hint waits: it only appears after a couple of quiet seconds, and is
+     gone for good after the first scroll, drag or click */
   .hint { position: fixed; right: 26px; bottom: 22px; font-size: 11px; letter-spacing: .08em;
-    text-transform: uppercase; opacity: .6; pointer-events: none; text-align: right; line-height: 1.7; }
+    text-transform: uppercase; opacity: 0; pointer-events: none; text-align: right; line-height: 1.7;
+    transition: opacity 1.4s ease; }
+  .hint.show { opacity: .6; }
   .contact { position: fixed; left: 28px; bottom: 22px; font-size: 11px; opacity: .7; line-height: 1.7; }
   .contact a { color: inherit; }
 
+  /* only the plain sky while loading; the label shows only if it takes a while */
   .loading { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 12px;
-    letter-spacing: .1em; text-transform: uppercase; opacity: .6; transition: opacity .6s; }
-  .loading.done { opacity: 0; pointer-events: none; }
+    letter-spacing: .1em; text-transform: uppercase; opacity: 0; transition: opacity .6s;
+    animation: qf-load-show .8s 1.6s forwards; }
+  @keyframes qf-load-show { to { opacity: .5; } }
+  .loading.done { opacity: 0 !important; animation: none; pointer-events: none; }
 
   .peek { position: fixed; pointer-events: none; font-size: 11px; letter-spacing: .06em; padding: 5px 8px;
     background: var(--ink); color: var(--paper); transform: translate(14px, 14px); opacity: 0;
-    transition: opacity .15s; white-space: nowrap; }
-  .peek.on { opacity: 1; }
+    transition: opacity .15s; white-space: nowrap; z-index: 7; }
+  /* the tag rides with the cursor, and comes in just after the plane catches */
+  .peek.on { opacity: 1; transition-delay: .15s; }
 
   .reader { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; gap: 8px;
     opacity: 0; pointer-events: none; transition: opacity .35s; }
@@ -61,8 +78,13 @@
     cursor: pointer; }
   .reader button:hover { background: var(--ink); }
   .reader button { white-space: nowrap; }
-  .hint, .contact, .masthead { transition: opacity .4s; }
-  body.reading .hint, body.reading .contact, body.reading .masthead { opacity: 0; }
+  .contact { transition: opacity .4s; }
+  body.reading .hint, body.reading .contact { opacity: 0; }
+  /* while a sheet is open or the panel is out, the title block steps back */
+  body.reading .masthead, body.asking .masthead { opacity: .3; }
+  /* the intro reveals these itself; nothing shows before it starts */
+  body.intro .masthead h1, body.intro .masthead p, body.intro .contact, body.intro .qdock { opacity: 0; }
+  body.intro .qdock, body.intro .contact { pointer-events: none; }
   .reader .short { display: none; }
   @media (max-width: 640px) { .reader button { padding: 8px 10px; font-size: 11px; } }
   @media (max-width: 480px) {
@@ -87,13 +109,13 @@
 </style>
 <link rel="stylesheet" href="panel.css">
 </head>
-<body>
+<body class="intro">
 <canvas id="stage" aria-hidden="true"></canvas>
 <div class="grain" aria-hidden="true"></div>
 <div class="grain-top" aria-hidden="true"></div>
 
 <div class="masthead">
-  <h1>Questions, folded.</h1>
+  <h1>Questions, folded<span class="qf-dot">.</span></h1>
   <p>Every plane carries a question people ask about reaching out. Pick one and unfold it — whatever you choose, IEX will help you land in the right place.</p>
 </div>
 <div class="contact">IEX · Office for Institutional Equity and Title IX<br>
