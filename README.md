@@ -247,11 +247,17 @@ the title, filtered out) is a constant blend set per draw.
   console warning says so.
 - **Release:** it lets go at the screen edge or under the panel.
 
+**The tag:** a caught plane shows its question in a small dark card beside
+the cursor, with what a click does under it in small type ("unfold →", or
+"waiting for IEX" / "your question" on a waiting plane). The card wraps at
+270 px and flips to the cursor's other side near the right or bottom edge so
+the question is never cut off.
+
 **Inputs:** one system, four inputs (`hoverSource`):
 - **pointer:** shows the cursor tag;
 - **panel row:** same catch, no tag;
 - **keyboard focus:** same catch;
-- **touch:** the first tap catches ("tap to unfold"), the second unfolds, and
+- **touch:** the first tap catches and shows the question ("tap to unfold →"), the second unfolds, and
   a tap on empty sky lets go.
 
 **Reduced motion:** keeps only the slow-down, the lift and its shadow, as

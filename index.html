@@ -93,10 +93,14 @@
   @keyframes qf-load-show { to { opacity: .55; } }
   .loading.done { opacity: 0 !important; animation: none; pointer-events: none; }
 
-  .peek { position: fixed; pointer-events: none; font-size: 11px; letter-spacing: .06em; padding: 5px 8px;
-    background: var(--ink); color: var(--paper); transform: translate(14px, 14px); opacity: 0;
-    transition: opacity .13s; white-space: nowrap; z-index: 7; }
-  /* the tag rides with the cursor, and comes in just after the plane catches */
+  .peek { position: fixed; left: 0; top: 0; pointer-events: none; max-width: 270px; padding: 10px 13px 9px;
+    background: var(--ink); color: var(--paper); opacity: 0; transition: opacity .13s; z-index: 7;
+    box-shadow: 3px 3px 0 rgba(31, 35, 40, .16); }
+  /* the plane's question, then a small cue for what a click does */
+  .peek-q { display: block; font-size: 14px; line-height: 1.38; letter-spacing: 0; text-wrap: pretty; }
+  .peek-cue { display: block; margin-top: 7px; font-size: 10.5px; letter-spacing: .08em; opacity: .62; white-space: nowrap; }
+  .peek-q:empty { display: none; }
+  .peek-q:empty + .peek-cue { margin-top: 0; }
   .peek.on { opacity: 1; transition-delay: .15s; }
 
   .reader { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; gap: 8px;
@@ -148,7 +152,7 @@
 <div class="contact">IEX · Office for Institutional Equity and Title IX<br>
   <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
 <div class="hint">scroll ↔ ↕ or drag to wander<br>click a plane to unfold it</div>
-<div class="peek" id="peek">unfold</div>
+<div class="peek" id="peek" aria-hidden="true"><span class="peek-q"></span><span class="peek-cue">unfold</span></div>
 <div class="focus-ring" id="ring"></div>
 
 <div class="reader" id="reader">

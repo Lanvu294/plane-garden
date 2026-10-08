@@ -1135,7 +1135,7 @@
   /* ----------------------------------------------------------------- hover */
   var ray = new T.Raycaster(), ndc = new T.Vector2();
   var mouse = { x: -1, y: -1, fresh: false, inside: false, kind: 'mouse' };
-  var peek = document.getElementById('peek');
+  var peek = document.getElementById('peek'), peekQ = peek.querySelector('.peek-q'), peekCue = peek.querySelector('.peek-cue');
   /* the frontmost plane actually under the point (the meshes, not boxes),
      skipping planes the panel has filtered out */
   function pick(x, y) {
@@ -1172,8 +1172,12 @@
     canvas.classList.toggle('over', !!p && source !== 'keyboard');
     var tagged = p && (source === 'pointer' || source === 'touch');
     if (tagged) {
-      peek.textContent = p.kind === 'waiting' ? (D.isMine(p.qid) ? C.sky.yours : C.sky.waiting)
-        : source === 'touch' ? C.sky.tap : C.sky.unfold;
+      var item = D.get(p.qid) || p.item;
+      peekQ.textContent = item && item.q ? item.q : '';
+      peekCue.textContent = p.kind === 'waiting' ? (D.isMine(p.qid) ? C.sky.yours : C.sky.waiting)
+        : (source === 'touch' ? C.sky.tap : C.sky.unfold) + ' \u2192';
+      peek.style.maxWidth = '';                 // re-measured for this question in placeTag
+      tagSize = null;
     }
     peek.classList.toggle('on', !!tagged);
     var src = S.get().hoverSource;
@@ -1181,7 +1185,20 @@
       S.set({ hoveredId: p ? p.qid : null, hoveredPlane: p ? p.i : null, hoverSource: p ? source : null });
     }
   }
-  function placeTag(x, y) { peek.style.left = x + 'px'; peek.style.top = y + 'px'; }
+  /* the tag sits below-right of the cursor, and flips to the other side of
+     it near the right or bottom of the screen so the question stays whole */
+  var tagSize = null;
+  function placeTag(x, y) {
+    var W = window.innerWidth, H = window.innerHeight, gap = 16;
+    if (!tagSize) {
+      peek.style.maxWidth = Math.min(270, W - 2 * gap) + 'px';
+      tagSize = { w: peek.offsetWidth, h: peek.offsetHeight };
+    }
+    var left = x + gap, top = y + gap;
+    if (left + tagSize.w > W - 8) left = Math.max(8, x - gap - tagSize.w);
+    if (top + tagSize.h > H - 8) top = Math.max(8, y - gap - tagSize.h);
+    peek.style.transform = 'translate(' + Math.round(left) + 'px,' + Math.round(top) + 'px)';
+  }
   var _v = new T.Vector3();
   /* still on it: the cursor over the plane itself, or within 8% of its
      size of its edge (four probes around the cursor, against its own
@@ -1808,7 +1825,7 @@
      fade where they cross), so they always read: the title block, the
      footer, and the hint while it shows. TEXT_RECTS: device pixels. */
   var textBoxes = [], measureTick = 0;
-  window.addEventListener('resize', function () { measureTick = 0; });
+  window.addEventListener('resize', function () { measureTick = 0; tagSize = null; });
   function setStyle(el, prop, v) { if (el && el['_qf_' + prop] !== v) { el['_qf_' + prop] = v; el.style[prop] = v; } }
   function boxOf(el, pad) {
     if (!el || !el.offsetParent) return null;
