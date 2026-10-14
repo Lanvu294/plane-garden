@@ -15,19 +15,39 @@
   :root {
     --paper: #DEDAD3; --ink: #1F2328; --rule: #638097; --wall: #ECE9E3;
     --wall-deep: #E2DED7;
+    /* The opening frame. One number, --fp (0 framed, 1 full-bleed), set by
+       garden.js as you scroll; everything below follows from it: the white
+       title band (--T tall) and the inset sky frame under it. The canvas
+       itself never changes size — the frame is a clip-path on #sky — so the
+       planes never move or resize. The buttons, footer and hint are placed
+       from the same numbers, so they ride the frame's edges. */
+    /* the layout grid: 12 columns, 64 px margins, 20 px gutters (4 / 16 / 12
+       on phones). The framed sky sits on the margins and starts 176 px down,
+       under the heading and its paragraph. */
+    --cols: 12; --grid-margin: 64px; --gutter: 20px;
+    --col: calc((100vw - 2 * var(--grid-margin) - (var(--cols) - 1) * var(--gutter)) / var(--cols));
+    --ink-head: #82423D;
+    --fp: 0; --T: 176px; --edge: var(--grid-margin); --radius: 0px; --pad: 20px;
+    --top: calc((1 - var(--fp)) * var(--T));
+    --side: calc((1 - var(--fp)) * var(--edge));
+    --bottom: calc((1 - var(--fp)) * var(--edge));
+    --r: calc((1 - var(--fp)) * var(--radius));
   }
+  @media (max-width: 1100px) { :root { --grid-margin: 40px; } }
+  @media (max-width: 767px) { :root { --cols: 4; --grid-margin: 16px; --gutter: 12px; --T: 212px; } }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--wall); color: var(--ink);
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #FFFFFF; color: var(--ink);
     font-family: 'Bitter', Georgia, serif; -webkit-font-smoothing: antialiased; }
-  /* the sky behind the planes: sampled from the reference, blue at the top
-     through lavender, cream and wheat to terracotta */
-  body { background: linear-gradient(180deg,
+  /* the sky frame: the canvas (and its grain) clipped to the inset frame.
+     Behind the canvas, the same sky as CSS, for the moment before the 3D
+     has painted: blue at the top through lavender, cream and wheat to
+     terracotta */
+  #sky { position: fixed; inset: 0;
+    clip-path: inset(var(--top) var(--side) var(--bottom) var(--side) round var(--r));
+    background: linear-gradient(180deg,
     #A8C4E6 0%, #B6CAE9 10%, #C4D0EB 20%, #D1D7EC 30%, #D9DAED 35%, #E3DADF 45%,
     #E7D9D3 50%, #EAD6C5 55%, #EED5B8 60%, #F1D2A9 65%, #F4D19C 70%, #F3C88C 75%,
-    #EAB87C 80%, #E3A36A 85%, #DF8B58 90%, #DF744C 95%, #DF6645 100%) fixed; }
-  /* a whisper of grain over the sky (the canvas paints the sky, so it sits above) */
-  .grain { position: fixed; inset: 0; pointer-events: none; opacity: .16; mix-blend-mode: multiply;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.12  0 0 0 0 0.13  0 0 0 0 0.16  0 0 0 1.1 -0.35'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+    #EAB87C 80%, #E3A36A 85%, #DF8B58 90%, #DF744C 95%, #DF6645 100%); }
   /* a printed, photographed finish rather than a rendered one: the faintest
      softening and grain over everything (the paper's lower contrast and
      colour are in its shader, so the sky keeps its exact colours) */
@@ -35,46 +55,66 @@
     filter: blur(0.35px); }
   .grain-top { position: fixed; inset: 0; pointer-events: none; opacity: .22; mix-blend-mode: soft-light;
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.15' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 2.2 -0.6'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+  /* a light sheet of paper over the whole sky frame, planes and all, so the
+     scene reads as printed on stock rather than lit on a screen: soft
+     mottling, a few fibres and a fine tooth, drawn once into a tile (the
+     script under #sky) and laid on with soft-light at low strength. Fixed to
+     the frame, like the page it's printed on. */
+  .paper-top { position: fixed; inset: 0; pointer-events: none; opacity: .5; mix-blend-mode: soft-light;
+    background-size: 512px 512px; }
+  /* the 12-column grid, drawn over the page with ?grid in the address */
+  .layout-grid { position: fixed; top: 0; bottom: 0; left: var(--grid-margin); right: var(--grid-margin); z-index: 60; pointer-events: none;
+    background: repeating-linear-gradient(to right, rgba(255, 0, 0, .1) 0 var(--col), transparent var(--col) calc(var(--col) + var(--gutter))); }
+  /* the ink filters (the svg at the top of the body) on every line of type */
+  .masthead h1 { filter: url(#ink-lg); }
+  .masthead p, .mast-mini, .peek-q { filter: url(#ink-a); }
+  .contact, .hint, .loading, .peek-cue, .reader button span { filter: url(#ink-sm); }
   #stage.dragging { cursor: grabbing; }
   #stage.over { cursor: pointer; }
 
-  .masthead { position: fixed; left: 28px; top: 22px; pointer-events: none; max-width: 520px; z-index: 2;
-    transition: opacity .5s; }
-  /* legibility without a box: a soft, edgeless haze of sky behind the words */
-  .masthead::before { content: ''; position: absolute; left: -140px; top: -110px; right: -160px; bottom: -120px; z-index: -1;
-    background: radial-gradient(ellipse 60% 55% at 38% 45%, rgba(178, 202, 233, .7) 0%, rgba(178, 202, 233, .5) 38%,
-      rgba(178, 202, 233, .18) 66%, rgba(178, 202, 233, 0) 100%); pointer-events: none; }
-  .masthead h1 .qf-dot { display: inline-block; }
-  .masthead p .ln { display: block; white-space: nowrap; }
-  .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 700; font-size: 34px;
-    line-height: 1.05; margin: 0 0 10px; letter-spacing: -0.01em; }
-  .masthead p { margin: 0; font-size: 12px; line-height: 1.6; opacity: .72; max-width: 360px; transition: opacity .8s; }
+  /* the heading and its paragraph, on the white above the frame: on the
+     grid's left margin, the paragraph seven columns wide. As the frame opens
+     they slide up by the band's height and fade out (by --fp 0.6). */
+  .masthead { position: fixed; left: var(--grid-margin); top: 46px; width: calc(7 * var(--col) + 6 * var(--gutter));
+    transform: translateY(calc(var(--fp) * -1 * var(--T))); opacity: clamp(0, calc(1 - var(--fp) / 0.6), 1);
+    pointer-events: none; text-align: left; color: var(--ink-head); z-index: 2; }
+  body.qf-frame-jump .masthead { transition: opacity .2s; }
+  /* at full-bleed, a compact title in the frame's top-left, level with the buttons */
+  .mast-mini { position: fixed; left: calc(var(--side) + var(--pad)); top: calc(var(--top) + var(--pad)); height: 38px;
+    display: flex; align-items: center; margin: 0; font-weight: 400; font-size: 19px; color: var(--ink-head);
+    pointer-events: none; z-index: 2; opacity: 0; transition: opacity .2s ease-out; }
+  /* it arrives with the buttons (body.qf-bar), as one top bar */
+  body.qf-bar .mast-mini { opacity: 1; transition: opacity .32s cubic-bezier(.22, .61, .36, 1); }
+  .mast-mini::before { content: ''; position: absolute; left: -110px; top: -70px; right: -120px; bottom: -70px; z-index: -1;
+    background: radial-gradient(ellipse 50% 50% at 45% 50%, rgba(178, 202, 233, .7) 0%, rgba(178, 202, 233, .45) 45%,
+      rgba(178, 202, 233, 0) 100%); pointer-events: none; }
+  .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 400; font-size: 38px;
+    line-height: 48px; margin: 0 0 1px; letter-spacing: -0.005em; text-wrap: balance; }
+  .masthead p { margin: 0; max-width: 35em; font-size: 20px; line-height: 28px; }
 
-  /* The words don't wait for the sky: they come in on their own as soon as
-     the page is there — the title at 0.1 s, the subtitle line by line from
-     0.3 s, the buttons and footer at 0.5 s — each a 400 ms fade and a small
-     rise. (backwards: once done, the page's own opacities take over.) */
-  @keyframes qf-in { from { opacity: 0; transform: translateY(5px); } }
+  /* The words don't wait for the sky: the title comes in at 0.2 s and the
+     subtitle lines just after, each fading up from 8 px lower, all done by
+     0.8 s. The footer and hint are simply there, riding the frame; the
+     buttons arrive with the open sky (body.qf-bar, panel.css). (backwards:
+     once done, the page's own opacities take over.) Reduced motion: a
+     600 ms fade. */
+  @keyframes qf-in { from { opacity: 0; transform: translateY(8px); } }
   @keyframes qf-fade { from { opacity: 0; } }
-  .masthead h1 { animation: qf-in .4s ease-out .1s backwards; }
-  .masthead p .ln { animation: qf-in .4s ease-out backwards; }
-  .masthead p .ln:nth-child(1) { animation-delay: .3s; }
-  .masthead p .ln:nth-child(2) { animation-delay: .4s; }
-  .masthead p .ln:nth-child(3) { animation-delay: .5s; }
-  .qdock, .contact { animation: qf-in .4s ease-out .5s backwards; }
+  .masthead h1 { animation: qf-in .5s cubic-bezier(.22, .61, .36, 1) .2s backwards; }
+  .masthead p { animation: qf-in .45s cubic-bezier(.22, .61, .36, 1) .3s backwards; }
+  .contact { transition: opacity .4s; }
   @media (prefers-reduced-motion: reduce) {
-    .masthead h1, .masthead p .ln, .qdock, .contact { animation-name: qf-fade; }
+    .masthead h1, .masthead p { animation: qf-fade .6s ease-out backwards; }
   }
   /* once you've unfolded something or opened the panel, the subtitle has done its job */
-  body.oriented .masthead p { opacity: .45; }
 
-  /* the hint waits: it only appears after a couple of quiet seconds, and is
-     gone for good after the first scroll, drag or click */
-  .hint { position: fixed; right: 26px; bottom: 22px; font-size: 11px; letter-spacing: .08em; z-index: 2;
+  /* the hint comes in with the buttons, and is gone for good after the
+     first scroll, drag or click */
+  .hint { position: fixed; right: calc(var(--side) + var(--pad)); bottom: calc(var(--bottom) + var(--pad)); font-size: 11px; letter-spacing: .08em; z-index: 2;
     text-transform: uppercase; opacity: 0; pointer-events: none; text-align: right; line-height: 1.7;
-    color: #15181C; transition: opacity 1.4s ease; }
+    color: #15181C; transition: opacity .6s ease-out; }
   .hint.show { opacity: 1; }
-  .contact { position: fixed; left: 28px; bottom: 22px; font-size: 11px; line-height: 1.7; z-index: 2; color: #15181C; }
+  .contact { position: fixed; left: calc(var(--side) + var(--pad)); bottom: calc(var(--bottom) + var(--pad)); font-size: 11px; line-height: 1.7; z-index: 2; color: #15181C; }
   /* the bottom corners get the same soft haze as the title, in the sky's own
      colour down there: 75% through the words, feathered to nothing, no edge.
      Planes behind them thin out too (in the scene), so the words always
@@ -111,10 +151,9 @@
     cursor: pointer; }
   .reader button:hover { background: var(--ink); }
   .reader button { white-space: nowrap; }
-  .contact { transition: opacity .4s; }
   body.reading .hint, body.reading .contact { opacity: 0; }
   /* while a sheet is open or the panel is out, the title block steps back */
-  body.reading .masthead, body.asking .masthead { opacity: .3; }
+  body.reading .mast-mini, body.asking .mast-mini { opacity: .3; }
   .reader .short { display: none; }
   @media (max-width: 640px) { .reader button { padding: 8px 10px; font-size: 11px; } }
   @media (max-width: 480px) {
@@ -131,27 +170,91 @@
   .focus-ring.on { opacity: .6; }
 
   @media (max-width: 640px) {
-    .contact { bottom: 60px; }
-    .masthead h1 { font-size: 26px; }
-    .masthead p { display: none; }
+    .masthead { top: 26px; width: calc(100vw - 2 * var(--grid-margin)); }
+    .masthead h1 { font-size: 27px; line-height: 34px; margin-bottom: 6px; }
+    .masthead p { font-size: 15.5px; line-height: 22px; }
+    .mast-mini { font-size: 15px; }
     .hint { display: none; }
   }
 </style>
 <link rel="stylesheet" href="panel.css">
 </head>
 <body>
-<canvas id="stage" aria-hidden="true"></canvas>
-<div class="grain" aria-hidden="true"></div>
-<div class="grain-top" aria-hidden="true"></div>
+<!-- the ink: every line of type looks inked by hand rather than set by a screen.
+     Each filter roughens the letter edges a touch (displacement by fine noise), lets the
+     ink lie unevenly (soft blotches of density) and drags thin dry scratches through it.
+     a/b/c are the same ink with different seeds, so neighbouring lines never repeat;
+     lg for the heading, sm for small type. -->
+<svg class="ink-defs" width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <filter id="ink-a" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.1" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="7" result="blot"/>
+    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.42" result="density"/>
+    <feTurbulence type="turbulence" baseFrequency="0.012 0.8" numOctaves="1" seed="12" result="streak"/>
+    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -7 0 0 0 4.1" result="scratch"/>
+    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
+    <feComposite in="ragged" in2="mask" operator="in"/>
+  </filter>
+  <filter id="ink-b" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="21" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.1" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="25" result="blot"/>
+    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.42" result="density"/>
+    <feTurbulence type="turbulence" baseFrequency="0.012 0.8" numOctaves="1" seed="30" result="streak"/>
+    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -7 0 0 0 4.1" result="scratch"/>
+    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
+    <feComposite in="ragged" in2="mask" operator="in"/>
+  </filter>
+  <filter id="ink-c" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="37" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.1" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="41" result="blot"/>
+    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.42" result="density"/>
+    <feTurbulence type="turbulence" baseFrequency="0.012 0.8" numOctaves="1" seed="46" result="streak"/>
+    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -7 0 0 0 4.1" result="scratch"/>
+    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
+    <feComposite in="ragged" in2="mask" operator="in"/>
+  </filter>
+  <filter id="ink-lg" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="2" seed="5" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.8" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="3" seed="9" result="blot"/>
+    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.52" result="density"/>
+    <feTurbulence type="turbulence" baseFrequency="0.007 0.45" numOctaves="1" seed="14" result="streak"/>
+    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -6.5 0 0 0 3.9" result="scratch"/>
+    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
+    <feComposite in="ragged" in2="mask" operator="in"/>
+  </filter>
+  <filter id="ink-sm" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" seed="13" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.7" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.13" numOctaves="3" seed="17" result="blot"/>
+    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.8 0 0 0 0.5" result="density"/>
+    <feTurbulence type="turbulence" baseFrequency="0.016 1.1" numOctaves="1" seed="22" result="streak"/>
+    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -8 0 0 0 4.8" result="scratch"/>
+    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
+    <feComposite in="ragged" in2="mask" operator="in"/>
+  </filter>
+</svg>
+<div id="sky">
+  <canvas id="stage" aria-hidden="true"></canvas>
+  <div class="grain-top" aria-hidden="true"></div>
+  <div class="paper-top" aria-hidden="true"></div>
+  <!-- the words that live in the sky ride inside its frame (so the frame clips their haze too) -->
+  <p class="mast-mini" aria-hidden="true">Helping you land in the right place.</p>
+  <div class="contact">IEX · Office for Institutional Equity and Title IX<br>
+  <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
+  <div class="hint">scroll ↔ ↕ or drag to wander<br>click a plane to unfold it</div>
+</div>
 
 <div class="masthead">
-  <h1>Questions, folded<span class="qf-dot">.</span></h1>
-  <p><span class="ln">Every plane carries a question people ask about reaching out.</span><span class="ln">Pick one and unfold it — whatever you choose, IEX will help you</span><span class="ln">land in the right place.</span></p>
+  <h1>Helping you land in the right place.</h1>
+  <p>CMU IEX is here to answer your questions, no matter how sure or unsure you feel about them. Ask and we will answer.</p>
   <div class="loading" id="loading">folding…</div>
 </div>
-<div class="contact">IEX · Office for Institutional Equity and Title IX<br>
-  <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
-<div class="hint">scroll ↔ ↕ or drag to wander<br>click a plane to unfold it</div>
+<div class="layout-grid" id="layout-grid" hidden></div>
+<script>if (/[?&]grid\b/.test(location.search)) document.getElementById('layout-grid').hidden = false;</script>
 <div class="peek" id="peek" aria-hidden="true"><span class="peek-q"></span><span class="peek-cue">unfold</span></div>
 <div class="focus-ring" id="ring"></div>
 
@@ -165,10 +268,50 @@
 <div class="sr" id="live" aria-live="polite"></div>
 
 <script>
+  setTimeout(function () {                  // the 3D never started: show the buttons anyway
+    if (window.GARDEN) return;
+    document.body.classList.add('qf-bar');
+    var d = document.querySelector('.qdock'); if (d) d.inert = false;
+  }, 6000);
   window.addEventListener('error', function (e) {
     var d = document.getElementById('loading');
     if (d) { d.textContent = 'something went wrong: ' + (e.message || e) + ' — try a hard reload (cmd+shift+R)'; d.style.opacity = 1; }
   });
+</script>
+<script>
+  /* the paper tile for .paper-top: mid-grey (soft-light's "no change") with
+     mottling, fibres and tooth around it */
+  (function () {
+    var N = 512, cv = document.createElement('canvas'); cv.width = cv.height = N;
+    var c = cv.getContext('2d'), seed = 7;
+    function rnd() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+    c.fillStyle = 'rgb(128,128,128)'; c.fillRect(0, 0, N, N);
+    /* mottling: soft light and dark clouds, wrapped so the tile repeats cleanly */
+    for (var k = 0; k < 70; k++) {
+      var x = rnd() * N, y = rnd() * N, r = 30 + rnd() * 110, v = rnd() < 0.5 ? 0 : 255, a = 0.035 + rnd() * 0.05;
+      for (var ox = -N; ox <= N; ox += N) for (var oy = -N; oy <= N; oy += N) {
+        var g = c.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+        g.addColorStop(0, 'rgba(' + v + ',' + v + ',' + v + ',' + a + ')'); g.addColorStop(1, 'rgba(' + v + ',' + v + ',' + v + ',0)');
+        c.fillStyle = g; c.fillRect(x + ox - r, y + oy - r, 2 * r, 2 * r);
+      }
+    }
+    /* fibres: short, thin, mostly lying one way */
+    for (var f = 0; f < 260; f++) {
+      var fx = rnd() * N, fy = rnd() * N, L = 4 + rnd() * 14, ang = (rnd() - 0.5) * 1.2, lt = rnd() < 0.55;
+      c.strokeStyle = lt ? 'rgba(255,255,255,' + (0.10 + rnd() * 0.12) + ')' : 'rgba(0,0,0,' + (0.06 + rnd() * 0.08) + ')';
+      c.lineWidth = 0.5 + rnd() * 0.6;
+      c.beginPath(); c.moveTo(fx, fy);
+      c.quadraticCurveTo(fx + Math.cos(ang) * L * 0.5 + (rnd() - 0.5) * 3, fy + Math.sin(ang) * L * 0.5 + (rnd() - 0.5) * 3,
+        fx + Math.cos(ang) * L, fy + Math.sin(ang) * L);
+      c.stroke();
+    }
+    /* tooth: fine per-pixel grain */
+    var im = c.getImageData(0, 0, N, N), d = im.data;
+    for (var i = 0; i < d.length; i += 4) { var n = (rnd() - 0.5) * 22; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+    c.putImageData(im, 0, 0);
+    var el = document.querySelector('.paper-top');
+    if (el) el.style.backgroundImage = 'url(' + cv.toDataURL('image/png') + ')';
+  })();
 </script>
 <!-- the panel first (it needs nothing from the 3D), then the sky -->
 <script src="questions.js"></script>

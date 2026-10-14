@@ -15,8 +15,9 @@ then open <http://localhost:8732/>.
 
 | | |
 | --- | --- |
-| trackpad / mouse wheel | scroll in both directions (shift + wheel goes sideways) |
-| drag | pan |
+| trackpad / mouse wheel | first opens the sky (the first ~400 px); then scrolls in both directions (shift + wheel goes sideways) |
+| Page Down, Space, ↓, Tab | open the sky (Tab then lands on *Ask a question*) |
+| drag | opens the sky if it's still framed, and pans |
 | arrow keys | pan; when a sheet is open, ← → go to the previous / next plane |
 | click a plane | unfold it |
 | click anywhere, Esc, or *fold it back* | fold it up and hang it back |
@@ -65,6 +66,27 @@ What keeps the paper from reading as a rendered, crisp graphic:
   0.35 px softening, with grain over everything.
 
 ## Questions: the panel and the sky
+
+**The panel's typography: one baseline grid.**
+- **The grid:** every line of writing is one rule (`--rule`, 30 px) or a
+  whole number of rules, and every gap is whole rules. Questions take one
+  rule per line, and the headline takes two.
+- **The ruling:** drawn from the same number, so each baseline lands on a
+  ruled line, like handwriting on notebook paper. That includes the second
+  line of a wrapped question, the margin numbers, the `+` icons, the search
+  text and the caption.
+- **How the text lands on the line:** each element nudges itself by
+  `--baseline-offset` and `--font-mid`. `--font-mid` is Bitter's baseline,
+  measured at 0.33 of the font size below the middle of its line box.
+- **The search field:** its underline is the ruled line it sits on, darkened
+  while it has focus.
+- **Ink:** umber, not black.
+  - Questions: `#4A3426`, Regular.
+  - Headline: `#3A281C`, Medium.
+  - Numbers, "From IEX", the caption, `+` and the placeholder: `#8C7563`
+    (3.9:1).
+  - Read questions and their tick: `#9A8470` (3.2:1; the suggested
+    `#A8937F` was 2.6:1).
 
 The panel and the sky are one system. Whatever the panel shows is what the sky
 shows.
@@ -131,63 +153,144 @@ heights (peek, half, full). It steps down to peek while you read.
 curl -X DELETE "https://plane-garden.vercel.app/api/questions?id=ID" -H "x-admin-token: $ADMIN_TOKEN"
 ```
 
-## The intro: one, then many
+## The opening: framed, then the sky
 
-**The words never wait for the 3D.** The title, subtitle, buttons and footer
-are HTML and fade in by themselves with CSS:
-- title at 0.1 s;
-- subtitle at 0.3 s, lines 100 ms apart;
-- buttons and footer at 0.5 s;
-- each a 400 ms fade with a 5 px rise.
+**Framed.** The page opens white, on a 12-column grid: 64 px margins and
+20 px gutters (40 px margins under 1100 px wide; 4 columns, 16 px margins and
+12 px gutters on phones).
+- **Heading:** *Helping you land in the right place.* (Bitter Regular, 38 px)
+  sits on the left margin, in brick red `#82423D`.
+- **Paragraph:** *CMU IEX is here to answer your questions…* follows (20/28 px)
+  and wraps at about seven columns.
+- **The sky frame:** sits on the margins, 176 px down (212 px on phones), with
+  square corners.
+- **Checking the grid:** add `?grid` to the address to draw the columns over
+  the page.
+- **One number drives it:** `--fp` (0 framed, 1 full-bleed), set by
+  `garden.js` (`FRAME`), with everything else derived in CSS (`index.html`
+  `:root`).
+- **The frame:** a `clip-path: inset(...)` on `#sky`. The canvas is always
+  the full window, so nothing is ever re-laid out.
+- **The footer and the hint** live inside `#sky`, so the frame clips their
+  haze too. They sit 20 px inside its edges and ride them as it opens.
 
-The panel script loads before the 3D. The font stylesheet doesn't block the
-first paint, so the words can show in Georgia for a moment before Bitter
-arrives.
+**Opening.** The first ~400 px of scrolling drives `--fp` 0 → 1. It follows
+softly (a damped lerp, 0.12 a frame at 60 fps) and doesn't move through the
+garden while it does.
+- **What moves:** the inset and corners go to 0, and the white title slides
+  up by its own height, gone by `--fp` 0.6.
+- **Wandering:** starts with the next gesture once it's fully open.
+- **Other ways to open it:** Page Down, Space, ↓ and Tab, dragging the sky,
+  or unfolding a plane (unfolding always happens full-bleed).
+- **Closing:** scrolling up while the view is back where it started closes the
+  frame again.
+- **Reduced motion:** it jumps open (or shut) with a 200 ms fade.
+- **In the console:** `GARDEN.frame.p`, `GARDEN.frame.set(0..1)`.
 
-**Loading.** The sky textures are drawn in code, not downloaded.
-- **Shared layers:** the paper fibres, grain and cut edge are drawn once, in
-  four variants, and stamped onto each sheet. Drawing them per sheet was
-  ~2.8 s of the old load; it's now ~0.1 s for all 160 sheets.
-- **Order:** the planes in view are folded first, far to near, which is the
-  wave's order.
-- **Start:** as soon as the first 10 are ready and on the GPU (shader compiled,
-  textures uploaded), the wave starts. Each sheet folded after that is
-  uploaded straight away and joins the wave when ready. A plane is never drawn
-  without its textures.
-- **Waiting:** if the planes take more than 1.2 s, a small "folding…" fades in
-  under the subtitle.
-- **three.js** is served from `lib/`, so there's no extra connection.
-- **Timings:** `GARDEN.timings()` (or `?timing` in the URL) reports when the
-  fonts, the first batch and the last plane were ready.
+**The top bar.** *Ask a question*, *All questions* and a compact copy of the
+heading (top-left) only exist once the sky is open.
+- **In:** at `--fp` ≥ 0.95 (`body.qf-bar`). The buttons fade and slide 6 px
+  down over 320 ms, *Ask* first and *All questions* 60 ms later, with the
+  title.
+- **Out:** below 0.8, with a 200 ms fade.
+- **Framed:** the buttons are `visibility: hidden` and `inert`, so they can't
+  be clicked or reached with Tab.
 
-**The wave** has one clock (`intro.t`), and every timing is in `INTRO`.
-- **Order:** everything in view, far to near.
-- **Pacing:** start times accelerate. The first gap is ~120 ms, shrinking to
-  a few ms by the end, with ±40 ms jitter. The starts span 0.65 s.
-- **Flights:** each takes 0.9 s ±15%, easing out. The wave takes about 1.5 s
-  in all.
-- **Near planes** fly in from beyond the nearest edge on a curve.
-- **Far planes** rise out of the haze: from deeper, scale 0.7 → 1, soft to
-  sharp.
-- **Fades:** the only one is the first 200 ms of each flight.
-- **Arrival:** each plane lands on its live pose, so there's no snap at the
-  handoff. A damped roll wobble then settles within 1.6 s.
-- **Hover:** a plane can be hovered as soon as it lands.
+## The sky
 
-**Skip:** any click, key, scroll or drag on the sky catches up over about
-0.4 s, and does nothing else. Typing in the panel is never caught.
+A sprayed, grainy gradient: the grain *is* the gradient. Each speck is one
+of two neighbouring key colours, chosen by noise against how far between them
+it is, so a colour change happens through how densely its specks are
+scattered.
+- **Key colours:** 9, picked from the original 17 stops. Neighbouring stops
+  are too alike to show a speck.
+- **Smoothness:** 20% of the original smooth gradient is mixed back in, so at
+  a glance it's the same sky.
+- **Unevenness:** a large, slow noise bends the bands, like hand spraying.
+- **Texture:** a sparser layer of bigger specks, a few stray darker droplets
+  in the light areas, and a fine "paper tooth".
+- **Painted once:** into a texture the size of the canvas, on load and on
+  resize, then drawn pixel for pixel each frame. Same seed every time, fixed
+  to the screen, so it never flickers or swims.
+- **Tuning:** the knobs are `SKY_GRAIN` at the top of `garden.js`
+  (`grainSize`, `softness`, `dustDensity`, `bandWarpAmount`,
+  `paperToothAmount`).
+- **Haze:** the planes' haze still samples the smooth gradient (`skyMap`).
+- **Speck size:** one device pixel, the finest a screen can show
+  (`grainSize` 0.25 CSS px, so even a 3x screen gets a speck per pixel). There
+  are no bigger specks (`bigSpecks: 0`). 45% of the smooth gradient is mixed
+  back in, so neighbouring specks differ less and the grain reads finer still.
+  Coarser grain made the sky read as a flat backdrop behind the planes.
+
+**Paper over everything.** A light sheet of paper texture lies over the whole
+sky frame, planes included (`.paper-top` in `index.html`), so the scene reads
+as printed on stock. It's a 512 px tile of soft mottling, a few short fibres
+and a fine tooth, drawn once by a small script in the page. It's laid on with
+soft-light at 50% around a mid-grey (soft-light's "no change"), so it adds
+texture without shifting the colours.
+
+## The intro: the sky opens, then the planes arrive
+
+**On load** (framed), the sky holds only 4 of the farthest, smallest planes,
+deep in the haze and swaying. Nothing else has arrived yet.
+
+**Scrolling** to open the frame steps you into the sky: the camera eases
+forward 6%, scrubbed by `--fp`. The first time `--fp` passes 0.35, the intro
+starts. From then on it runs on its own clock (`intro.t`), so it always plays
+out whole, however fast or back and forth you scroll. Every timing is in
+`INTRO`.
+
+- **Lowered on threads:** the ~20 biggest, nearest planes (about a third of
+  those in view).
+  - Each starts 25–40% of the screen above its place. Its string lengthens as
+    it comes down over 2.8–3.6 s (ease-out quart).
+  - It swings like a pendulum losing energy: z 6–9°, period 1.4–1.9 s,
+    τ 1.2 s, with a little yaw drift. The swing is about the point its string
+    meets it, so it doesn't fly sideways.
+  - The 6 biggest come last, starting at 2.6–3.8 s.
+- **Out of the haze:** all the rest.
+  - Planes are never see-through. Each starts as the exact colour of the sky
+    behind it (`emergeAmt` in the paper shader) and clears to its resting haze
+    over 2.2–3.0 s (ease-out cubic).
+  - It drifts down 40–80 px with a 3–4° swing.
+- **Order:** far first, near last, roughly centre-out, jittered over 0–3.8 s.
+- **Handoff:** the swing crossfades into the idle sway over 600 ms. The sway
+  runs underneath the whole time, so no plane is ever at rest.
+- **The title:** nothing is lowered across the compact title's corner.
+- **Peak motion:** about 60 planes are in motion at once on desktop, all slow
+  (most just drifting out of the haze). With 69 planes in view and starts
+  between 0 and 3.8 s, it can't be fewer.
+
+**Catching up:** a click or a tap on the sky while planes are arriving catches
+the intro up over 0.4 s. Scrolling never does.
 
 **Other versions:**
-- **Repeat visit in the same session:** the same wave, ~0.8 s.
-- **Reduced motion:** every plane crossfades in place, together, over 500 ms.
+- **Repeat visit in the same session:** no intro; everything is already hung.
+- **Reduced motion:** the same, with half the sway.
+- **Planes that come into view later:** they come out of the haze in place
+  over 0.8 s.
 
-**Tuning:** add `?introSpeed=0.25` to watch it slowly.
-`GARDEN.intro.replay('full' | 'repeat' | 'reduced')` and `.schedule()` help
-in the browser console.
+**Always on:**
+- **Resting haze by depth:** none in front, ~15% in the middle ground, ~45% at
+  the very back, tinted by the sky behind each pixel.
+- **Idle life:** each plane rocks ±1.5–3° (period 4–7 s) about where its
+  string meets it and bobs ±3–5 px (its string follows). Nearer planes move a
+  little more.
+- **Breathing:** the camera drifts very slowly, ±0.6% and ±0.3° of roll over
+  12–16 s. It holds still while a sheet is open.
+- **Warmth:** a faint warm bounce from the low orange sky lights faces that
+  point down.
+
+**Loading:** the planes in view are folded first, in the order they'll
+arrive.
+
+**Tuning:** add `?introSpeed=0.25` to watch it slowly. In the browser console,
+`GARDEN.intro.replay('full')` and `GARDEN.intro.schedule()` help.
 
 **Afterwards:**
 - **Legibility:** the title block, the footer and the hint (while it shows)
-  each sit on a soft, edgeless haze. The corners use the sky's own colour
+  each sit on a soft, edgeless haze (on the sky; the big framed title sits on
+  white). The corners use the sky's own colour
   down there, which keeps at least 4.5:1 contrast for the text, measured at
   4.77:1 at the darkest point. Planes passing behind any of them thin to 35%,
   and threads fade where they cross.
@@ -196,12 +299,61 @@ in the browser console.
 - **Dimming:** once you've unfolded something or opened the panel, the
   subtitle drops to 45%. While a sheet or the panel is open, the title block
   dims to 30%.
-- **The hint:** it only appears after 2 s with no interaction, and goes for
-  good after the first scroll, drag or click.
+- **The hint:** it's there from the start, and goes for good after the
+  first scroll, drag or click in the open sky.
 
 **Tuning:** add `?introSpeed=0.25` to watch it slowly. `GARDEN.intro.scrub(t)`,
 `.play()`, `.replay('full' | 'repeat' | 'reduced')`, `.schedule()` and
 `.timings()` help with tuning in the browser console.
+
+## Keeping it smooth: frozen planes
+
+A folded plane is about 130 objects: every flap and hinge of the fold rig,
+and about 27 separate meshes. With 160 planes that was 37,000 objects and
+4,300 draw calls a frame. Recomputing all their matrices took ~12 ms of
+script every frame, before anything was drawn, so the swaying hitched (worse
+on 120 Hz screens, where a frame is only 8.3 ms).
+
+**The fix:** while a plane only hangs or flies, its folds never change, so
+it's swapped for one mesh. Its pieces are merged, exactly as posed, into the
+wrap's space (`freeze`/`thaw` in `garden.js`).
+- **Thawing:** anything that moves the folds thaws it first: the wing
+  breath, opening, closing, a launch, or a change of ranks or tones. Every
+  rig `set*` call does this, so nothing can touch a frozen rig by mistake.
+- **Refreezing:** after half a second still. The swap is exact, so it
+  never shows.
+
+**Measured** (headless Chrome, 2x, idle sway):
+
+| | Before | After |
+| --- | --- | --- |
+| Objects | 37,028 | 1,044 |
+| Meshes | 4,304 | 240 |
+| Script per frame | ~12 ms | ~1.5 ms (p99 2.8 ms) |
+| Late frames in 20 s | — | 0 of 1,200 |
+| Motion jitter | — | under 0.1 px a frame |
+
+## The ink
+
+Every line of type looks inked by hand rather than set by a screen.
+
+**On the page** (the heading, paragraph, footer, hint, buttons and the
+notebook), SVG filters (the `<svg class="ink-defs">` at the top of
+`index.html`) do three things:
+- roughen the letter edges a touch (displacement by fine noise);
+- let the ink lie unevenly (soft blotches of density);
+- drag thin, dry, mostly level scratches through it.
+
+There are a few versions: `ink-a/b/c` are the same ink with different seeds,
+so neighbouring rows never repeat; `ink-lg` is for headings and `ink-sm` for
+small type. The search field and the composer stay clean, so typing is never
+fuzzy.
+
+**On the sheets** (the question, answer and foot printed on every plane),
+`setType` hand-sets each letter: a little off its line and angle and a touch
+lighter or darker, seeded so a sheet always prints the same. Then, on the
+type's own layer, the ink gets uneven density (quarter-inch blotches and a
+finer grain) and dry scratches, before it goes down on the paper.
 
 ## The catch (hover)
 

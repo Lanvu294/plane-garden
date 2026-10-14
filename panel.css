@@ -16,7 +16,9 @@
 .qf-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ------------------------------------------------------------------ dock */
-.qdock { position: fixed; right: 26px; top: 22px; display: flex; gap: 8px; z-index: 6; transition: opacity .3s; }
+/* in the sky frame's top-right corner, riding its edges (the frame's numbers are in index.html) */
+.qdock { position: fixed; right: calc(var(--side, 0px) + var(--pad, 20px)); top: calc(var(--top, 0px) + var(--pad, 20px)); display: flex; gap: 8px; z-index: 6;
+  transition: opacity .6s ease-out, transform .6s cubic-bezier(.22, .61, .36, 1); }
 body.reading .qdock, body.asking .qdock { opacity: 0; pointer-events: none; }
 .qdock button { font: 500 12px/1 var(--serif); letter-spacing: .04em; cursor: pointer; display: inline-flex;
   align-items: center; gap: 8px; padding: 10px 14px; border-radius: 0; transition: transform .2s, box-shadow .2s, background .2s; }
@@ -28,8 +30,36 @@ body.reading .qdock, body.asking .qdock { opacity: 0; pointer-events: none; }
 .qdock .count { font-weight: 700; font-size: 13px; padding-left: 8px; border-left: 1px solid rgba(31, 35, 40, .25); }
 .qdock svg { width: 15px; height: 15px; }
 .qdock .label-short { display: none; }
+/* The top bar only exists once the sky is open: framed, the buttons are
+   hidden and inert (garden.js sets body.qf-bar at --fp >= 0.95 and takes it
+   away below 0.8, so they don't flicker at the edge). In: each fades up
+   and slides 6 px down into place over 320 ms, "Ask" first and "All
+   questions" 60 ms after, with the compact title. Out: a 200 ms fade, then
+   hidden again. (translate, not transform, so the hover nudge still works.) */
+.qdock { visibility: hidden; transition: visibility 0s linear .2s; }
+.qdock .q-ask, .qdock .q-all { opacity: 0; translate: 0 -6px;
+  transition: opacity .2s ease-out, translate .2s ease-out, transform .2s, box-shadow .2s, background .2s; }
+body.qf-bar .qdock { visibility: visible; transition: visibility 0s; }
+body.qf-bar .qdock .q-ask, body.qf-bar .qdock .q-all { opacity: 1; translate: 0 0;
+  transition: opacity .32s cubic-bezier(.22, .61, .36, 1), translate .32s cubic-bezier(.22, .61, .36, 1), transform .2s, box-shadow .2s, background .2s; }
+body.qf-bar .qdock .q-all { transition-delay: 60ms, 60ms, 0s, 0s, 0s; }
+@media (prefers-reduced-motion: reduce) { .qdock .q-ask, .qdock .q-all { translate: none; } }
 
 /* ----------------------------------------------------------------- panel */
+/* One baseline grid. Every line of writing in the panel is one rule tall
+   (--rule) or a whole number of rules, and every gap is whole rules. The
+   ruling is drawn from the same number (each 1 px line ends at
+   --baseline-offset), so each baseline lands on a ruled line the way handwriting sits on notebook paper.
+   An element's text is nudged onto its line by .on-rule's top: its line box
+   is k rules tall, Bitter's baseline sits --font-mid of the font size below
+   the line box's middle, so the nudge is offset + (k-1) rules - k/2 rules -
+   that. Each element just says its --fs (and --k if it isn't 1). */
+.nb { --rule: 30px; --line: var(--rule); --baseline-offset: 21px; --font-mid: 0.33;
+  --ink-q: #4A3426; --ink-head: #3A281C; --ink-mute: #8C7563; --ink-read: #9A8470; }
+.nb-kicker, .nb-title, .nb-note, .nb-cue, .nb-search input, .nb-search-count, .nb-clear,
+.row .q, .row .num, .row .plus, .preview .ans, .nb-link, .nb-review, .nb-empty p, .row .meta {
+  --k: 1; position: relative; font-size: var(--fs); line-height: calc(var(--k) * var(--rule));
+  top: calc(var(--baseline-offset) + (var(--k) - 1) * var(--rule) - var(--k) * var(--rule) / 2 - var(--fs) * var(--font-mid)); }
 .nb { position: fixed; top: 16px; right: 16px; bottom: 16px; width: min(480px, calc(100vw - 32px)); z-index: 20;
   display: flex; flex-direction: column; visibility: hidden; transform: translateX(calc(100% + 48px));
   filter: drop-shadow(0 22px 34px rgba(48, 34, 22, .24)) drop-shadow(0 2px 3px rgba(48, 34, 22, .16));
@@ -81,54 +111,60 @@ body.reading .nb:hover { opacity: .9; }
   cursor: pointer; font: 400 26px/1 var(--serif); color: rgba(31, 35, 40, .6); }
 .nb-close:hover { color: var(--ink); }
 .nb-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
-  scrollbar-color: rgba(31, 35, 40, .25) transparent; padding: 37px 30px var(--line) 84px;
+  scrollbar-color: rgba(31, 35, 40, .25) transparent; padding: var(--rule) 30px var(--rule) 84px;
   background-image:
     linear-gradient(90deg, transparent 63px, var(--margin) 63px, var(--margin) 64.5px, transparent 64.5px),
-    linear-gradient(transparent calc(var(--line) - 1px), var(--ruling) calc(var(--line) - 1px));
-  background-size: 100% 100%, 100% var(--line); background-position: 0 0, 0 9px; background-attachment: local, local; }
+    repeating-linear-gradient(to bottom, transparent 0 calc(var(--rule) - 1px), var(--ruling) calc(var(--rule) - 1px) var(--rule));
+  background-size: 100% 100%, 100% var(--rule); background-position: 0 0, 0 calc(var(--baseline-offset) - var(--rule));
+  background-attachment: local, local; }
 .nb-scroll > section[hidden] { display: none; }
 
-.nb-kicker { font: 500 11px/var(--line) var(--serif); letter-spacing: .12em; text-transform: uppercase; color: rgba(31, 35, 40, .55); margin: 0; }
-.nb-title { font: 700 26px/calc(var(--line) * 1.5) var(--serif); margin: 0 0 calc(var(--line) * .5); letter-spacing: -.01em; color: var(--ink); }
+.nb-kicker { --fs: 11px; font-family: var(--serif); font-weight: 400; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-mute); margin: 0; }
+.nb-title { --fs: 27px; --k: 2; font-family: var(--serif); font-weight: 500; margin: 0; letter-spacing: -.01em; color: var(--ink-head); }
 .nb-title:focus { outline: none; }
-.nb-note { font: 400 13px/var(--line) var(--serif); color: rgba(31, 35, 40, .78); margin: 0 0 calc(var(--line) * .5); }
+.nb-note { --fs: 13px; font-family: var(--serif); font-weight: 400; color: var(--ink-q); margin: 0 0 var(--rule); }
 
 /* search, on a line, with the count at the end */
-.nb-search { display: flex; align-items: center; gap: 10px; height: var(--line); border-bottom: 1.5px solid rgba(31, 35, 40, .5); }
-.nb-search svg { width: 14px; height: 14px; opacity: .6; flex: none; }
-.nb-search input { flex: 1; min-width: 0; border: 0; background: none; font: 400 15px/1 var(--serif); color: var(--ink); padding: 0; height: 100%; outline: none; }
-.nb-search input::placeholder { color: rgba(31, 35, 40, .45); }
-.nb-search-count { font: 500 11px/1 var(--serif); letter-spacing: .04em; color: var(--blue); white-space: nowrap; }
+/* its underline is the ruled line it sits on (darkened when it has focus) */
+.nb-search { display: flex; align-items: flex-start; gap: 10px; height: var(--rule); position: relative; }
+.nb-search::after { content: ''; position: absolute; left: 0; right: 0; top: calc(var(--baseline-offset) - 1px); height: 1px;
+  background: var(--ink-q); opacity: 0; transition: opacity .2s; pointer-events: none; }
+.nb-search:focus-within::after { opacity: .8; }
+.nb-search svg { width: 14px; height: 14px; opacity: .6; flex: none; color: var(--ink-mute); margin-top: calc(var(--baseline-offset) - 12px); }
+.nb-search input { --fs: 15px; flex: 1; min-width: 0; border: 0; background: none; font-family: var(--serif); font-weight: 400;
+  color: var(--ink-q); padding: 0; height: var(--rule); outline: none; }
+.nb-search input::placeholder { color: var(--ink-mute); opacity: 1; }
+.nb-search-count { --fs: 11px; font-family: var(--serif); font-weight: 500; letter-spacing: .04em; color: var(--blue); white-space: nowrap; }
 .nb-search input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
 .nb-search input:focus-visible { outline: none; }
-.nb-search:focus-within { border-bottom-color: var(--ink); box-shadow: 0 1.5px 0 var(--ink); }
-.nb-clear { border: 0; background: none; cursor: pointer; font: 400 18px/1 var(--serif); color: rgba(31, 35, 40, .5); padding: 0 2px; }
+.nb-clear { --fs: 18px; border: 0; background: none; cursor: pointer; font-family: var(--serif); font-weight: 400; color: var(--ink-mute); padding: 0 2px; }
 .nb-clear:hover { color: var(--ink); }
 .nb-clear[hidden] { display: none; }
-.nb-cue { font: italic 400 12px/var(--line) var(--serif); color: rgba(31, 35, 40, .58); margin: 0 0 calc(var(--line) * .5); }
+.nb-cue { --fs: 12px; font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--ink-mute); margin: 0 0 var(--rule); }
 .nb-cue::before { content: '✈ '; font-style: normal; color: var(--blue); }
 
 /* rows */
 .nb-list { list-style: none; margin: 0; padding: 0; }
 .row { position: relative; margin: 0 -10px; border-radius: 3px; transition: background .2s; }
-.row + .row { margin-top: 2px; }
+.row + .row { margin-top: 0; }
 .row-main { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 8px; width: 100%; text-align: left;
   background: none; border: 0; padding: 0 10px; cursor: pointer; color: var(--ink); position: relative; }
-.row .num { position: absolute; left: -48px; top: 0; width: 34px; text-align: right; font: 500 11px/var(--line) var(--serif);
-  color: #557590; letter-spacing: .04em; }
-.row .num-read { display: none; width: 12px; height: 12px; vertical-align: -1px; margin-left: 3px; color: #6f8a6a; }
+.row .num { --fs: 11px; position: absolute; left: -48px; width: 34px; text-align: right; font-family: var(--serif); font-weight: 400;
+  color: var(--ink-mute); letter-spacing: .04em; }
+.row .num-read { display: none; width: 12px; height: 12px; vertical-align: -1px; margin-left: 3px; color: var(--ink-read); }
 .row.read .num-n { opacity: .45; }
 .row.read .num-read { display: inline-block; }
-.row .q { font: 700 17px/var(--line) var(--serif); }
-.row .plus { font: 400 20px/var(--line) var(--serif); color: rgba(31, 35, 40, .45); transition: transform .25s, color .2s; }
-.row.open .plus { transform: rotate(45deg); color: var(--ink); }
+.row .q { --fs: 17px; font-family: var(--serif); font-weight: 400; color: var(--ink-q); }
+.row .plus { --fs: 18px; font-family: var(--serif); font-weight: 400; color: var(--ink-mute); transition: transform .25s, color .2s; }
+.row.open .plus { transform: rotate(45deg); color: var(--ink-q); }
 .row:hover, .row.hot { background: rgba(99, 128, 151, .09); }
 .row.hot::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; background: var(--blue); border-radius: 2px; }
-.row.read .q { color: rgba(31, 35, 40, .72); }
-.preview { padding: 0 10px calc(var(--line) * .25); }
-.preview .ans { font: 400 13.5px/var(--line) var(--serif); color: rgba(31, 35, 40, .86); margin: 0;
+.row.read .q { color: var(--ink-read); }
+.row.read .num-n { opacity: 1; color: var(--ink-read); }
+.preview { padding: 0 10px; }
+.preview .ans { --fs: 13.5px; font-family: var(--serif); font-weight: 400; color: var(--ink-q); margin: 0;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.nb-link { font: 500 11px/var(--line) var(--serif); letter-spacing: .08em; text-transform: uppercase; color: #2f4c63;
+.nb-link { --fs: 11px; font-family: var(--serif); font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: #2f4c63;
   background: none; border: 0; padding: 0; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
 .nb-link:hover { text-decoration: underline; text-underline-offset: 4px; }
 .nb-link svg { width: 14px; height: 14px; }
@@ -136,9 +172,8 @@ body.reading .nb:hover { opacity: .9; }
 
 /* waiting rows: nothing to unfold yet */
 .row.waiting .row-main { grid-template-columns: 1fr; cursor: pointer; }
-.row.waiting + .row.waiting { margin-top: calc(var(--line) * .5); }
-.row.waiting .q { font-weight: 400; font-size: 17px; }
-.row.waiting .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: var(--line); }
+.row.waiting + .row.waiting { margin-top: var(--rule); }
+.row.waiting .meta { --fs: 11.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: var(--rule); }
 .chip { font: 500 10px/1 var(--serif); letter-spacing: .08em; text-transform: uppercase; color: var(--blue);
   border: 1px solid rgba(63, 99, 128, .45); padding: 4px 7px 3px; border-radius: 10px; background: none; }
 .row .when { font: 400 11.5px/1 var(--serif); color: rgba(31, 35, 40, .55); }
@@ -146,9 +181,9 @@ body.reading .nb:hover { opacity: .9; }
   padding: 4px 7px 3px; border-radius: 10px; }
 .row .hover-note { font: italic 400 11.5px/1 var(--serif); color: var(--blue); opacity: 0; transition: opacity .2s; }
 .row.waiting:hover .hover-note, .row.waiting.hot .hover-note, .row.waiting .row-main:focus-visible .hover-note { opacity: 1; }
-.nb-empty p { font: 400 15px/var(--line) var(--serif); margin: 0; }
-.nb-empty .go { font-size: 12px; margin-top: 2px; }
-.nb-review { font: italic 400 12px/var(--line) var(--serif); color: rgba(31, 35, 40, .5); margin: calc(var(--line) * .5) 0 0; }
+.nb-empty p { --fs: 15px; font-family: var(--serif); font-weight: 400; color: var(--ink-q); margin: 0; }
+.nb-empty .go { --fs: 12px; }
+.nb-review { --fs: 12px; font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--ink-mute); margin: var(--rule) 0 0; }
 
 /* ----------------------------------------------------------------- ask */
 .reassure { list-style: none; margin: 0 0 var(--line); padding: 0; }
@@ -218,11 +253,11 @@ body.reading .nb:hover { opacity: .9; }
 
 /* --------------------------------------------- phones: a bottom sheet */
 @media (max-width: 767px) {
-  .qdock { top: auto; right: auto; left: 16px; bottom: 16px; }
+  .qdock { top: auto; right: auto; left: calc(var(--side, 0px) + var(--pad, 20px)); bottom: calc(var(--bottom, 0px) + var(--pad, 20px)); }
   .qdock button { padding: 9px 11px; font-size: 11px; }
   .qdock .label-long { display: none; }
   .qdock .label-short { display: inline; }
-  .contact { bottom: 66px !important; }
+  .contact { bottom: calc(var(--bottom, 0px) + var(--pad, 20px) + 50px) !important; }
   .nb { top: auto; left: 0; right: 0; bottom: 0; width: 100%; height: 52vh; transform: translateY(100%);
     transition: transform .26s cubic-bezier(.4, 0, 1, 1), visibility 0s .26s, height .3s cubic-bezier(.2, .8, .2, 1), opacity .3s;
     filter: drop-shadow(0 -10px 24px rgba(48, 34, 22, .22)); }
@@ -237,12 +272,25 @@ body.reading .nb:hover { opacity: .9; }
   .nb-count { font-size: 12px; }
   .nb-ask { padding: 10px 12px; margin-right: 10px; }
   .nb-page { border-radius: 0; -webkit-mask: none; mask: none; }
-  .nb-scroll { padding: 30px 18px var(--line) 62px;
+  .nb-scroll { padding: var(--rule) 18px var(--rule) 62px;
     background-image:
       linear-gradient(90deg, transparent 46px, var(--margin) 46px, var(--margin) 47.5px, transparent 47.5px),
-      linear-gradient(transparent calc(var(--line) - 1px), var(--ruling) calc(var(--line) - 1px)); }
+      repeating-linear-gradient(to bottom, transparent 0 calc(var(--rule) - 1px), var(--ruling) calc(var(--rule) - 1px) var(--rule)); }
   .row .num { left: -42px; width: 28px; }
   .nb-close { top: 4px; right: 6px; }
   body.reading .nb { opacity: .9; }
   @media (prefers-reduced-motion: reduce) { .nb, .nb.open { animation: none; transform: none; } .nb:not(.open) { transform: translateY(100%); } }
 }
+
+/* ------------------------------------------------- the ink (see index.html)
+   Every line of type looks inked by hand: ragged edges, uneven density, dry
+   scratches. Rows alternate three seeds so no two neighbours match. The
+   search field and the composer stay clean, so typing is never fuzzy. */
+.qdock button > span, .qdock .count, .nb-tab-label, .nb-count, .nb-ask, .nb-kicker, .nb-cue, .nb-search-count,
+.row .num, .row .plus, .row .when, .nb-link, .chip, .counter, .ask-error, .row .hover-note { filter: url(#ink-sm); }
+.nb-title { filter: url(#ink-lg); }
+.nb-note, .preview .ans, .nb-empty p, .nb-review, .reassure li, .pii-note, .contact-card p { filter: url(#ink-a); }
+.row:nth-child(3n + 1) .q { filter: url(#ink-a); }
+.row:nth-child(3n + 2) .q { filter: url(#ink-b); }
+.row:nth-child(3n) .q { filter: url(#ink-c); }
+.qdock button > span, .qdock .count { display: inline-block; }

@@ -43,6 +43,18 @@
     if (u < 0.95) return 13 + v * 10;             // foreground   +13 .. +23
     return 30 + v * 8;                            // very near    +30 .. +38
   }
+  /* The sky's spray-paint grain (tune by eye). The grain is the gradient:
+     each speck is one of two neighbouring colours, chosen by noise against
+     how far between them it is, so colours change through how densely their
+     specks are scattered. */
+  var SKY_GRAIN = {
+    grainSize: 0.25,          // speck size, CSS px: below one device pixel, so every pixel is its own speck
+    softness: 0.45,           // how much of the smooth gradient is mixed back in (softer specks read finer)
+    bigSpecks: 0,             // share of a sparser layer of bigger (1.6x) specks; 0 = none
+    dustDensity: 0.0015,      // stray darker droplets in the light areas (share of pixels)
+    bandWarpAmount: 0.05,     // how unevenly the bands lie (in gradient heights)
+    paperToothAmount: 0.025   // fine luminance texture, +-, like pigment on paper
+  };
   var PLANE_SCALE = 1.4;                         // hung a little larger than the paper's true size
   /* the strings hang from well above the page: the view never scrolls high
      enough to see where they start */
@@ -153,22 +165,107 @@
     skyMap: { value: new T.CanvasTexture(skyCanvas) },
     viewH: { value: 1 },
     hazeNear: { value: 0 }, hazeFar: { value: 1 },
-    hazeAmount: { value: 0.66 },
+    hazeAmount: { value: 0.45 },
     nearFrom: { value: 0 }, nearTo: { value: 1 },
+    /* resting haze by depth: none in front, ~15% in the middle ground, ~45%
+       at the very back, tinted by the sky behind each pixel */
+    hazeStart: { value: 0 }, hazeEnd: { value: 1 },
     mist: { value: new T.Color('#D9DAED') },           // the cool, luminous colour of distance
-    glow: { value: new T.Color('#FFF1DA') },           // the backlight that wraps turning faces
+    glow: { value: new T.Color('#FFE8D0') },           // the backlight that wraps turning faces (sunset-warm)
     ambience: { value: 1 }                             // 1 in the garden, 0 for the sheet being read
   };
-  /* the same sky as the page, fixed to the screen — drawn as its own quad so
-     the intro can bring it up from a paler, washed-out version */
+  /* The sky behind everything, fixed to the screen: the sprayed gradient
+     (SKY_GRAIN), painted once into a texture the size of the canvas (on
+     load and on resize) and then just drawn each frame, pixel for pixel.
+     Same seed every time, so it never flickers, and it's in screen space,
+     so it doesn't swim as you pan or as the frame opens. The specks choose
+     between key colours picked from the gradient's own stops (neighbouring
+     stops are too alike to show a speck); the smooth gradient is mixed back
+     in at SKY_GRAIN.softness, so at a glance it's the same sky. The planes'
+     haze still samples the smooth one (skyMap). */
+  var SKY_KEYS = [['#A8C4E6', 0], ['#D1D7EC', .3], ['#D9DAED', .35], ['#E7D9D3', .5], ['#F4D19C', .7],
+                  ['#F3C88C', .75], ['#E3A36A', .85], ['#DF744C', .95], ['#DF6645', 1]];
   var skyWash = { value: 0 };
+  var skyGrainRT = null, skyGrainRes = { value: new T.Vector2(1, 1) };
+  var skyGrainMat = new T.ShaderMaterial({
+    uniforms: {
+      smoothSky: HAZE.skyMap, res: skyGrainRes, dpr: { value: 1 },
+      keyCol: { value: SKY_KEYS.map(function (k) { return new T.Color(k[0]); }) },
+      keyPos: { value: SKY_KEYS.map(function (k) { return k[1]; }) },
+      grainSize: { value: SKY_GRAIN.grainSize }, softness: { value: SKY_GRAIN.softness }, bigSpecks: { value: SKY_GRAIN.bigSpecks },
+      dustDensity: { value: SKY_GRAIN.dustDensity }, warpAmt: { value: SKY_GRAIN.bandWarpAmount },
+      toothAmt: { value: SKY_GRAIN.paperToothAmount }
+    },
+    depthTest: false, depthWrite: false,
+    vertexShader: 'void main() { gl_Position = vec4( position.xy, 0.0, 1.0 ); }',
+    fragmentShader: [
+      '#define NK ' + SKY_KEYS.length,
+      'uniform sampler2D smoothSky; uniform vec2 res; uniform float dpr;',
+      'uniform vec3 keyCol[NK]; uniform float keyPos[NK];',
+      'uniform float grainSize, softness, dustDensity, warpAmt, toothAmt, bigSpecks;',
+      /* hash without sine (stable on every GPU), and smooth value noise */
+      'float hash12( vec2 p ) { vec3 p3 = fract( vec3( p.xyx ) * .1031 ); p3 += dot( p3, p3.yzx + 33.33 ); return fract( ( p3.x + p3.y ) * p3.z ); }',
+      'float vnoise( vec2 p ) { vec2 i = floor( p ), f = fract( p ); vec2 u = f * f * ( 3.0 - 2.0 * f );',
+      '  return mix( mix( hash12( i ), hash12( i + vec2( 1, 0 ) ), u.x ), mix( hash12( i + vec2( 0, 1 ) ), hash12( i + vec2( 1, 1 ) ), u.x ), u.y ); }',
+      'float fbm( vec2 p ) { return 0.55 * vnoise( p ) + 0.3 * vnoise( p * 2.03 + 17.1 ) + 0.15 * vnoise( p * 4.11 + 41.7 ); }',
+      'void main() {',
+      '  vec2 px = gl_FragCoord.xy, css = px / dpr;',
+      '  float t0 = 1.0 - px.y / res.y;',                                   /* 0 at the top */
+      /* the bands lie unevenly, as if sprayed by hand: a very large, slow warp */
+      '  vec2 big = css / max( res.x, res.y ) * dpr * 2.2;',
+      '  float t = clamp( t0 + ( fbm( big + vec2( 3.7, 1.3 ) ) - 0.5 ) * 2.0 * warpAmt, 0.0, 1.0 );',
+      /* the two key colours either side, and how far between them */
+      '  vec3 A = keyCol[ 0 ], B = keyCol[ 1 ], D = keyCol[ 2 ]; float f = 0.0;',
+      '  for ( int k = 0; k < NK - 1; k ++ ) {',
+      '    if ( t >= keyPos[ k ] && t <= keyPos[ k + 1 ] ) {',
+      '      A = keyCol[ k ]; B = keyCol[ k + 1 ]; D = keyCol[ k + 2 < NK ? k + 2 : NK - 1 ];',
+      '      f = ( t - keyPos[ k ] ) / max( keyPos[ k + 1 ] - keyPos[ k ], 1e-4 );',
+      '    }',
+      '  }',
+      /* the grain: fine specks, with a sparser layer of bigger ones */
+      '  float n = hash12( floor( css / grainSize ) + 0.5 );',
+      '  vec2 bigCell = floor( css / ( grainSize * 1.6 ) );',
+      '  if ( hash12( bigCell + 91.3 ) < bigSpecks ) n = hash12( bigCell + 7.7 );',
+      '  vec3 speck = n < smoothstep( 0.0, 1.0, f ) ? B : A;',
+      '  vec3 smoothC = texture2D( smoothSky, vec2( 0.5, 1.0 - t ) ).rgb;',
+      '  vec3 c = mix( speck, smoothC, softness );',
+      /* dust: a few stray darker droplets where the sky is light */
+      '  float lum = dot( smoothC, vec3( 0.299, 0.587, 0.114 ) );',
+      '  if ( hash12( floor( css / grainSize ) + 213.7 ) < dustDensity * smoothstep( 0.72, 0.85, lum ) ) {',
+      '    vec3 darker = dot( D, vec3( .299, .587, .114 ) ) < dot( B, vec3( .299, .587, .114 ) ) ? D : B;',
+      '    c = mix( c, darker * 0.9, 0.85 );',
+      '  }',
+      /* paper tooth: a fine, low-contrast luminance texture */
+      '  c *= 1.0 + ( vnoise( css / 1.6 ) - 0.5 ) * 2.0 * toothAmt;',
+      '  gl_FragColor = vec4( c, 1.0 );',
+      '}'
+    ].join('\n')
+  });
+  var skyGrainScene = new T.Scene();
+  skyGrainScene.add(new T.Mesh(new T.PlaneGeometry(2, 2), skyGrainMat));
+  /* paint it once for this canvas size */
+  function paintSkyGrain() {
+    var size = renderer.getDrawingBufferSize(new T.Vector2());
+    if (skyGrainRT && skyGrainRT.width === size.x && skyGrainRT.height === size.y) return;
+    if (skyGrainRT) skyGrainRT.dispose();
+    skyGrainRT = new T.WebGLRenderTarget(size.x, size.y, { minFilter: T.NearestFilter, magFilter: T.NearestFilter,
+      depthBuffer: false, stencilBuffer: false });
+    skyGrainRes.value.set(size.x, size.y);
+    skyGrainMat.uniforms.dpr.value = renderer.getPixelRatio();
+    var prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(skyGrainRT);
+    renderer.render(skyGrainScene, bgCam);
+    renderer.setRenderTarget(prev);
+    skyQuadMat.uniforms.map.value = skyGrainRT.texture;
+  }
   var bgScene = new T.Scene(), bgCam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  bgScene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.ShaderMaterial({
-    uniforms: { map: HAZE.skyMap, wash: skyWash }, depthTest: false, depthWrite: false,
-    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }',
-    fragmentShader: 'uniform sampler2D map; uniform float wash; varying vec2 vUv;\n' +
-      'void main() { vec3 c = texture2D( map, vUv ).rgb; gl_FragColor = vec4( mix( c, vec3( 0.965, 0.96, 0.955 ), wash ), 1.0 ); }'
-  })));
+  var skyQuadMat = new T.ShaderMaterial({
+    uniforms: { map: { value: HAZE.skyMap.value }, res: skyGrainRes, wash: skyWash }, depthTest: false, depthWrite: false,
+    vertexShader: 'void main() { gl_Position = vec4( position.xy, 0.0, 1.0 ); }',
+    fragmentShader: 'uniform sampler2D map; uniform vec2 res; uniform float wash;\n' +
+      'void main() { vec3 c = texture2D( map, gl_FragCoord.xy / res ).rgb; gl_FragColor = vec4( mix( c, vec3( 0.965, 0.96, 0.955 ), wash ), 1.0 ); }'
+  });
+  bgScene.add(new T.Mesh(new T.PlaneGeometry(2, 2), skyQuadMat));
 
   function resize() {
     var w = window.innerWidth, h = window.innerHeight;
@@ -177,12 +274,15 @@
     camera.updateProjectionMatrix();
     HAZE.viewH.value = h * renderer.getPixelRatio();
     clampTarget();
+    paintSkyGrain();
   }
   window.addEventListener('resize', resize);
   /* the mist starts behind the middle ground and is thickest at the back;
      everything nearer than the middle is "near" for colour and contrast */
   HAZE.hazeNear.value = CAM_Z - 2;
   HAZE.hazeFar.value = CAM_Z - Z_FAR + 4;
+  HAZE.hazeStart.value = CAM_Z - 22;                 // the foreground and nearer: no haze
+  HAZE.hazeEnd.value = CAM_Z - Z_FAR;                 // the very back: hazeAmount
   HAZE.nearFrom.value = CAM_Z - Z_NEAR;
   HAZE.nearTo.value = CAM_Z - 4;
 
@@ -394,33 +494,81 @@
     if (cur) lines.push(cur);
     return lines;
   }
-  /* the type, set on the ruling; printed into the paper, so it is there
-     from the first fold to the last */
-  function setType(c, sheet, item, ppi) {
+  /* The type, set on the ruling; printed into the paper, so it is there
+     from the first fold to the last. Inked by hand rather than set: each
+     letter sits a little off its line and angle (seeded, so a sheet always
+     prints the same), and on its own layer the ink lies unevenly (soft
+     blotches of density, a finer grain of it) with thin dry scratches
+     dragged through, before it goes down on the paper. */
+  function setType(c, sheet, item, ppi, seed) {
     var W = c.canvas.width, H = c.canvas.height, u = ppi;
     var pitch = RULE_PITCH * u, top = 1.05 * u;
     var m = 0.7 * u, maxW = W - 2 * m;
-    c.fillStyle = INK;
-    c.textBaseline = 'alphabetic';
-    c.font = '500 ' + (0.13 * u) + 'px "Bitter", Georgia, serif';
-    c.globalAlpha = 0.7;
-    c.fillText('A QUESTION, FOLDED', m, top - 0.18 * u);
-    c.globalAlpha = 1;
+    var layer = document.createElement('canvas'); layer.width = W; layer.height = H;
+    var t = layer.getContext('2d'), rs = (seed || 1) * 7919 + 17;
+    function rnd01() { rs = (rs * 16807) % 2147483647; return rs / 2147483647; }
+    var widths = {};
+    function inked(text, x, y, alpha) {
+      var fs = parseFloat(t.font.split('px')[0].split(' ').pop()), key = t.font, cw = widths[key] || (widths[key] = {});
+      for (var i = 0; i < text.length; i++) {
+        var ch = text[i], w = cw[ch] || (cw[ch] = t.measureText(ch).width);
+        if (ch !== ' ') {
+          t.save();
+          t.globalAlpha = alpha * (0.86 + 0.14 * rnd01());
+          t.translate(x + w / 2, y + (rnd01() - 0.5) * 0.05 * fs);
+          t.rotate((rnd01() - 0.5) * 2.4 * Math.PI / 180);
+          var sc = 1 + (rnd01() - 0.5) * 0.05; t.scale(sc, sc);
+          t.fillText(ch, -w / 2, 0);
+          t.restore();
+        }
+        x += w;
+      }
+    }
+    t.fillStyle = INK;
+    t.textBaseline = 'alphabetic';
+    t.font = '500 ' + (0.13 * u) + 'px "Bitter", Georgia, serif';
+    inked('A QUESTION, FOLDED', m, top - 0.18 * u, 0.7);
     /* question: two rulings per line */
     var qSize = (sheet.w > sheet.h ? 0.44 : 0.48) * u;
-    c.font = '700 ' + qSize + 'px "Bitter", Georgia, serif';
-    var qLines = wrap(c, item.q, maxW), line = 2;
-    qLines.forEach(function (l) { c.fillText(l, m, top + line * pitch - 0.05 * u); line += 2; });
+    t.font = '700 ' + qSize + 'px "Bitter", Georgia, serif';
+    var qLines = wrap(t, item.q, maxW), line = 2;
+    qLines.forEach(function (l) { inked(l, m, top + line * pitch - 0.05 * u, 1); line += 2; });
     /* answer: one ruling per line */
     line += 1;
-    c.font = '400 ' + (0.185 * u) + 'px "Bitter", Georgia, serif';
-    wrap(c, item.a, maxW).forEach(function (l) { c.fillText(l, m, top + line * pitch - 0.06 * u); line += 1; });
+    t.font = '400 ' + (0.185 * u) + 'px "Bitter", Georgia, serif';
+    wrap(t, item.a, maxW).forEach(function (l) { inked(l, m, top + line * pitch - 0.06 * u, 1); line += 1; });
     /* the foot */
-    c.font = '400 ' + (0.115 * u) + 'px "Bitter", Georgia, serif';
-    c.globalAlpha = 0.75;
-    c.fillText('IEX · Office for Institutional Equity and Title IX', m, H - 0.62 * u);
-    c.fillText('institutionalequity@cmu.edu · (412) 268-7125', m, H - 0.42 * u);
-    c.globalAlpha = 1;
+    t.font = '400 ' + (0.115 * u) + 'px "Bitter", Georgia, serif';
+    inked('IEX · Office for Institutional Equity and Title IX', m, H - 0.62 * u, 0.75);
+    inked('institutionalequity@cmu.edu · (412) 268-7125', m, H - 0.42 * u, 0.75);
+    /* the ink: uneven density (soft blotches about a quarter inch across,
+       then a finer grain), knocked out of the type only */
+    function density(cell, lo) {
+      var nw = Math.max(2, Math.ceil(W / cell)), nh = Math.max(2, Math.ceil(H / cell));
+      var nc = document.createElement('canvas'); nc.width = nw; nc.height = nh;
+      var nx = nc.getContext('2d'), im = nx.createImageData(nw, nh);
+      for (var k = 0; k < im.data.length; k += 4) { im.data[k] = im.data[k + 1] = im.data[k + 2] = 0; im.data[k + 3] = 255 * (lo + (1 - lo) * rnd01()); }
+      nx.putImageData(im, 0, 0);
+      t.globalCompositeOperation = 'destination-in';
+      t.imageSmoothingEnabled = true;
+      t.drawImage(nc, 0, 0, W, H);
+    }
+    density(0.25 * u, 0.62);
+    density(Math.max(1.5, 0.035 * u), 0.78);
+    /* dry scratches: thin, mostly level strokes where the ink skipped */
+    t.globalCompositeOperation = 'destination-out';
+    t.lineCap = 'round';
+    var n = Math.round(W * H / (u * u) * 4);
+    for (var sI = 0; sI < n; sI++) {
+      var sx = rnd01() * W, sy = rnd01() * H, len = (0.15 + rnd01() * 0.9) * u, ang = (rnd01() - 0.5) * 0.14;
+      t.globalAlpha = 0.5 + rnd01() * 0.45;
+      t.lineWidth = Math.max(0.6, (0.004 + rnd01() * 0.007) * u);
+      t.beginPath(); t.moveTo(sx, sy);
+      t.quadraticCurveTo(sx + Math.cos(ang) * len / 2, sy + Math.sin(ang) * len / 2 + (rnd01() - 0.5) * 0.02 * u, sx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
+      t.stroke();
+    }
+    t.globalCompositeOperation = 'source-over'; t.globalAlpha = 1;
+    c.drawImage(layer, 0, 0);
   }
   function frontTexture(sheet, item, ppi, seed, creases) {
     var W = Math.round(sheet.w * ppi), H = Math.round(sheet.h * ppi);
@@ -428,7 +576,7 @@
     var c = cv.getContext('2d');
     c.fillStyle = tone(PAPER, seed); c.fillRect(0, 0, W, H);
     rule(c, W, H, ppi, 0.55);
-    setType(c, sheet, item, ppi);
+    setType(c, sheet, item, ppi, seed);
     paperSurface(c, W, H, ppi, seed, 0.8);
     pressCreases(c, sheet, ppi, creases, 1);
     cutEdge(c, W, H, ppi, seed);
@@ -470,7 +618,8 @@
        lifted it is (hi), and for a waiting plane how much of its colour has
        bled in (bleed: 0 plain cream, 1 its gradient) */
     m.userData.dim = { value: 0 };
-    m.userData.fade = { value: 1 };          // overall opacity (the blend constant): arrival, behind the title, filtered out
+    m.userData.fade = { value: 1 };          // overall opacity (the blend constant): behind the title, filtered out
+    m.userData.emerge = { value: 0 };        // how deep in the haze it still is (opaque): 1 = the sky's own colour
     m.userData.flex = { value: 0 };          // the wing breath: how far the wings flex, radians at the tip
     m.userData.bleed = { value: 1 };
     m.userData.creamMap = { value: back };
@@ -478,6 +627,7 @@
       sh.uniforms.backMap = m.userData.backMap;
       sh.uniforms.feather = m.userData.feather;
       sh.uniforms.dimAmt = m.userData.dim;
+      sh.uniforms.emergeAmt = m.userData.emerge;
       sh.uniforms.flexAmt = m.userData.flex;
       sh.uniforms.bleed = m.userData.bleed;
       sh.uniforms.creamMap = m.userData.creamMap;
@@ -488,7 +638,7 @@
         .replace('#include <project_vertex>',
         '#include <project_vertex>\n  vViewP = - mvPosition.xyz;\n  vRank = rank;');
       sh.fragmentShader = 'uniform sampler2D backMap, creamMap;\nuniform float feather, camNear, camFar, dimAmt, bleed;\nvarying vec2 vRank;\n#define RANK_STEP 0.0004\n' +
-        'uniform sampler2D skyMap;\nuniform float viewH, hazeNear, hazeFar, hazeAmount, nearFrom, nearTo;\n' +
+        'uniform sampler2D skyMap;\nuniform float viewH, hazeNear, hazeFar, hazeStart, hazeEnd, hazeAmount, nearFrom, nearTo, emergeAmt;\n' +
         'uniform vec3 mist, glow;\nuniform float ambience;\nvarying vec3 vViewP;\n' + sh.fragmentShader
         .replace('#include <map_fragment>',
           /* detail falls away with distance: far sheets are read at a coarser
@@ -528,6 +678,9 @@
           '  vec3 nF = normalize( cross( dFdx( vViewP ), dFdy( vViewP ) ) );\n' +
           '  float rim = pow( 1.0 - abs( dot( nF, normalize( vViewP ) ) ), 2.2 );\n' +
           '  col += glow * skyHere * rim * 0.26 * ambience;\n' +
+          /* and from below, the faintest warm bounce of the low orange sky,
+             so the planes sit in the sunset rather than on it */
+          '  col += vec3( 0.87, 0.47, 0.32 ) * max( -nF.y, 0.0 ) * 0.05 * ambience;\n' +
           /* one light bathes everything */
           '  col = mix( col, col * skyHere * 1.16, 0.12 * ambience );\n' +
           /* form flattens with distance: far planes lose their light-and-shade
@@ -548,9 +701,9 @@
           '  col *= mix( 1.08, 1.0, ambience );\n' +
           /* the air: values compress and colour washes toward the light of
              the sky behind, cooled and lifted a little toward the mist */
-          '  float hz = pow( farT, 1.15 ) * hazeAmount;\n' +
+          '  float hz = pow( clamp( ( viewD - hazeStart ) / ( hazeEnd - hazeStart ), 0.0, 1.0 ), 1.3 ) * hazeAmount * ambience;\n' +
           '  vec3 skyc = texture2D( skyMap, vec2( 0.5, gl_FragCoord.y / viewH ) ).rgb;\n' +
-          '  vec3 air = mix( skyc, mist, 0.3 ) * 1.03;\n' +
+          '  vec3 air = mix( skyc, mist, 0.15 ) * 1.01;\n' +
           '  float l1 = dot( col, vec3( 0.299, 0.587, 0.114 ) );\n' +
           '  col = mix( mix( col, vec3( l1 ), hz * 0.45 ), air, hz );\n' +
           /* the printed finish: a touch less contrast and colour, as on a
@@ -560,6 +713,10 @@
           /* filtered out: grey, and washed toward the sky behind */
           '  float ldim = dot( col, vec3( 0.299, 0.587, 0.114 ) );\n' +
           '  col = mix( col, mix( vec3( ldim ), skyHere * 1.02, 0.55 ), dimAmt * 0.8 );\n' +
+          /* emerging: still fully opaque, just the colour of the sky behind
+             it, coming out of the haze (the intro, and planes that come into
+             view later) */
+          '  col = mix( col, skyc, emergeAmt );\n' +
           '  gl_FragColor.rgb = clamp( col, 0.0, 1.0 );\n' +
           /* a cut sheet is never a ruler-straight pixel step: the outermost
              pixel and a half of the paper fade out (through alpha-to-coverage,
@@ -590,6 +747,7 @@
      the plane being opened ever changes this, so it lives in an attribute. */
   function setRanks(p, k) {
     if (p.rankStack === k) return;
+    thaw(p); p.mergedDirty = true;
     p.rankStack = k;
     var rk = p.rig.ranksAt(k);
     p.rig.regions.forEach(function (r, i) {
@@ -632,6 +790,106 @@
     mat.userData.fade.value = p.appear == null ? 1 : p.appear;
     rig.root.visible = mat.userData.fade.value > 0.004;
   }
+
+  /* ------------------------------------------------------- frozen planes
+     A folded plane is ~130 objects (every flap and hinge of the fold rig)
+     and ~27 meshes. Redoing all their matrices and drawing every piece each
+     frame, for 160 planes, was most of a frame's time (~12 ms of script, 4300
+     draw calls) and is what made the swaying hitch. While a plane only hangs
+     (or flies), its folds don't change, so it's swapped for one mesh: its
+     pieces merged, exactly as posed, into the wrap's space. Anything that
+     moves the folds (the wing breath, opening, closing, a launch, a change
+     of ranks or tones) thaws it first — every rig set* call does — and it
+     freezes again once it has been still for half a second. The swap is
+     exact, so it never shows. */
+  var _mRel = new T.Matrix4(), _mInv = new T.Matrix4(), _nMat = new T.Matrix3(), _v3 = new T.Vector3();
+  function mergeRegions(p) {
+    var rig = p.rig, regions = rig.regions;
+    if (!regions.length) return null;
+    rig.root.updateMatrixWorld(true);
+    _mInv.copy(p.wrap.matrixWorld).invert();
+    var names = Object.keys(regions[0].mesh.geometry.attributes), total = 0, totalIdx = 0;
+    for (var r = 0; r < regions.length; r++) {
+      var g = regions[r].mesh.geometry;
+      if (Object.keys(g.attributes).length !== names.length) return null;
+      for (var n = 0; n < names.length; n++) if (!g.attributes[names[n]]) return null;
+      total += g.attributes.position.count;
+      totalIdx += g.index ? g.index.count : g.attributes.position.count;
+    }
+    var out = {}, idx = new (total > 65535 ? Uint32Array : Uint16Array)(totalIdx), vo = 0, io = 0;
+    names.forEach(function (nm) { out[nm] = new Float32Array(total * regions[0].mesh.geometry.attributes[nm].itemSize); });
+    regions.forEach(function (rr) {
+      var g = rr.mesh.geometry, cnt = g.attributes.position.count;
+      _mRel.multiplyMatrices(_mInv, rr.mesh.matrixWorld);
+      _nMat.getNormalMatrix(_mRel);
+      names.forEach(function (nm) {
+        var a = g.attributes[nm], sz = a.itemSize, dst = out[nm];
+        for (var v = 0; v < cnt; v++) {
+          if (nm === 'position') {
+            _v3.fromBufferAttribute(a, v).applyMatrix4(_mRel);
+            dst[(vo + v) * 3] = _v3.x; dst[(vo + v) * 3 + 1] = _v3.y; dst[(vo + v) * 3 + 2] = _v3.z;
+          } else if (nm === 'normal') {
+            _v3.fromBufferAttribute(a, v).applyMatrix3(_nMat).normalize();
+            dst[(vo + v) * 3] = _v3.x; dst[(vo + v) * 3 + 1] = _v3.y; dst[(vo + v) * 3 + 2] = _v3.z;
+          } else {
+            for (var c = 0; c < sz; c++) dst[(vo + v) * sz + c] = a.array[v * sz + c];
+          }
+        }
+      });
+      if (g.index) { for (var i = 0; i < g.index.count; i++) idx[io++] = g.index.array[i] + vo; }
+      else { for (var j = 0; j < cnt; j++) idx[io++] = vo + j; }
+      vo += cnt;
+    });
+    var geo = new T.BufferGeometry();
+    names.forEach(function (nm) { geo.setAttribute(nm, new T.BufferAttribute(out[nm], regions[0].mesh.geometry.attributes[nm].itemSize)); });
+    geo.setIndex(new T.BufferAttribute(idx, 1));
+    geo.computeBoundingSphere();
+    return geo;
+  }
+  function setPickable(meshes, on) {
+    meshes.forEach(function (m) {
+      var k = pickables.indexOf(m);
+      if (on && k < 0) pickables.push(m); else if (!on && k >= 0) pickables.splice(k, 1);
+    });
+  }
+  function regionMeshes(p) { return p.rig.regions.map(function (r) { return r.mesh; }); }
+  function freeze(p) {
+    if (p.frozen || p.noFreeze || !p.rig || !p.wrap || p.rig.root.parent !== p.wrap) return;
+    if (!p.merged || p.mergedDirty) {
+      var g = mergeRegions(p);
+      if (!g) { p.noFreeze = true; return; }
+      if (p.merged) { p.merged.geometry.dispose(); p.merged.geometry = g; }
+      else {
+        p.merged = new T.Mesh(g, p.mats[0]);
+        p.merged.onBeforeRender = paperBlend;
+        p.merged.userData.plane = p;
+      }
+      p.mergedDirty = false;
+    }
+    p.merged.visible = p.rig.root.visible;
+    p.wrap.remove(p.rig.root); p.wrap.add(p.merged);
+    setPickable(regionMeshes(p), false); setPickable([p.merged], true);
+    p.frozen = true;
+  }
+  function thaw(p) {
+    p.stillFrames = 0;
+    if (!p.frozen) return;
+    p.rig.root.visible = p.merged.visible;
+    p.wrap.remove(p.merged); p.wrap.add(p.rig.root);
+    setPickable([p.merged], false); setPickable(regionMeshes(p), true);
+    p.frozen = false;
+  }
+  /* every change to the folds goes through the rig's set* methods: thaw first */
+  function guardRig(p) {
+    var rig = p.rig;
+    Object.keys(rig).forEach(function (k) {
+      if (!/^set/.test(k) || typeof rig[k] !== 'function') return;
+      var f = rig[k];
+      rig[k] = function () { thaw(p); p.mergedDirty = true; return f.apply(rig, arguments); };
+    });
+  }
+  function planeVisible(p, v) { if (p.frozen) p.merged.visible = v; else p.rig.root.visible = v; }
+  function planeShown(p) { return p.frozen ? p.merged.visible : p.rig.root.visible; }
 
   /* ------------------------------------------------------- the wing breath
      When a plane is caught its wings take a small updraft: both wing creases
@@ -850,6 +1108,7 @@
               front: front, back: back, mats: [mat], hi: null };
     fxInit(p); byI[p.i] = p;
     dressRig(p, rig, sheet, mat);
+    guardRig(p);
     var box = new T.Box3();
     rig.regions.forEach(function (r) { box.expandByObject(r.mesh); });
     var c = box.getCenter(new T.Vector3());
@@ -901,6 +1160,7 @@
     var thread = new T.Line(sg, p.stringMat);
     thread.userData.thread = true;
     swing.add(thread);
+    p.thread = thread;
     wall.add(swing);
 
     /* mostly side-on and three-quarter, a few nose-on, all swaying */
@@ -916,6 +1176,13 @@
     p.ax = (rnd(i, 12) - 0.5) * 0.01; p.az = (rnd(i, 13) - 0.5) * 0.01;
     p.vx = 0; p.vz = 0;
     p.yaw = (rnd(i, 14) - 0.5) * 0.1; p.vy = 0;
+    /* idle life on top of the breeze: a slow rock (z, about where its string
+       meets it) and a bob, each its own period and phase; nearer planes a
+       little more (parallax) */
+    var nk = (z - Z_FAR) / DEPTH;
+    p.idle = { A: (1.5 + 1.5 * nk) * Math.PI / 180, T: 4 + 3 * rnd(i, 21), ph: rnd(i, 22) * Math.PI * 2,
+               B: 3 + 2 * nk, Tb: 4.5 + 2.5 * rnd(i, 23), phb: rnd(i, 24) * Math.PI * 2 };
+    p.bobIdle = 0; p.emerge = 0;
     p.hang = hang; p.tilt = tilt; p.wrap = wrapG; p.swing = swing;
     p.x = x; p.y = y; p.z = z; p.hangY = y - CEIL_Y;
     p.len = CEIL_Y - y;                                  // string length: longer swings slower
@@ -983,6 +1250,7 @@
               mine: mine, sheet: sheet, rig: rig, front: front, back: back, cream: cream, mats: [mat], hi: null };
     fxInit(p); byI[p.i] = p;
     dressRig(p, rig, sheet, mat);
+    guardRig(p);
     p.centerLocal = new T.Vector3();
     var box = new T.Box3();
     rig.regions.forEach(function (r) { box.expandByObject(r.mesh); });
@@ -1047,6 +1315,98 @@
   }
 
   /* ---------------------------------------------------------------- panning */
+  /* ------------------------------------------------------------ the frame
+     The page opens framed: the title on white, the sky in an inset frame
+     below it (index.html draws it from one number, --fp). The first ~400 px
+     of scrolling (or Page Down / Space / down arrow) opens the frame to
+     full-bleed instead of moving through the garden; dragging or unfolding
+     a plane opens it at once. From full-bleed, scrolling up while the view
+     is back where it started closes it again. The canvas never changes
+     size, so nothing in the scene moves while it opens; the intro carries
+     on regardless. Reduced motion: it jumps open (or shut), with a 200 ms
+     fade of the title. */
+  var FRAME = { p: 0, target: 0, span: 400, ease: 0.12, shown: -1, home: null, held: false, lastWheel: 0,
+                bar: false, focusAsk: false, hideTimer: null };
+  /* the top bar (buttons and compact title): in at p >= 0.95, out below 0.8 */
+  var dock = document.querySelector('.qdock');
+  if (dock) dock.inert = true;
+  function showBar() {
+    FRAME.bar = true; clearTimeout(FRAME.hideTimer);
+    document.body.classList.add('qf-bar');
+    if (dock) dock.inert = false;
+    if (FRAME.focusAsk && dock) { FRAME.focusAsk = false; var a = dock.querySelector('.q-ask'); if (a) a.focus(); }
+    measureTick = 0;
+  }
+  function hideBar() {
+    FRAME.bar = false;
+    document.body.classList.remove('qf-bar');
+    clearTimeout(FRAME.hideTimer);
+    FRAME.hideTimer = setTimeout(function () { if (!FRAME.bar && dock) dock.inert = true; }, 200);
+    measureTick = 0;
+  }
+  var rootStyle = document.documentElement.style;
+  function setFrame(v) {
+    FRAME.target = clamp01(v);
+    if (reduceMotion) {
+      FRAME.target = FRAME.target > 0 ? 1 : 0;
+      if (FRAME.target !== FRAME.p) document.body.classList.add('qf-frame-jump');
+      FRAME.p = FRAME.target;
+    }
+  }
+  function openFrame() { setFrame(1); }
+  function frameOpen() { return FRAME.target >= 1 && FRAME.p >= 1; }
+  /* per frame: p follows its target softly (a damped lerp, 0.12 a frame at 60 fps) */
+  function frameTick(dt) {
+    if (FRAME.p !== FRAME.target) {
+      FRAME.p += (FRAME.target - FRAME.p) * (1 - Math.pow(1 - FRAME.ease, dt * 60));
+      if (Math.abs(FRAME.target - FRAME.p) < 0.0008) FRAME.p = FRAME.target;
+    }
+    if (FRAME.p !== FRAME.shown) {
+      FRAME.shown = FRAME.p;
+      rootStyle.setProperty('--fp', FRAME.p.toFixed(4));
+      document.body.classList.toggle('framed', FRAME.p < 1);
+      measureTick = 0;                                   // the words moved: re-measure what planes thin behind
+    }
+    if (!FRAME.bar && FRAME.p >= 0.95) showBar();
+    else if (FRAME.bar && FRAME.p < 0.8) hideBar();
+  }
+  function atHome() {
+    if (!FRAME.home) return true;
+    var vw = visibleHeight(CAM_Z) * camera.aspect;
+    return cam.ty >= FRAME.home.ty - 0.3 && Math.abs(cam.tx - FRAME.home.tx) < vw * 0.15;
+  }
+  function inNotebook(t) { return !!(t && t.closest && t.closest('.nb, .notebook, input, textarea, select')); }
+  window.addEventListener('wheel', function (e) {
+    if (openP || inNotebook(e.target)) return;
+    var now = performance.now(), gap = now - FRAME.lastWheel;
+    FRAME.lastWheel = now;
+    var dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1);
+    /* the scroll that opened the frame doesn't carry on into the garden:
+       wander starts with the next gesture */
+    if (FRAME.held && gap < 180) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    FRAME.held = false;
+    if (frameOpen() && !(dy < 0 && atHome())) return;    // open: the garden has it
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (dy > 0 && FRAME.target >= 1) return;             // still easing open
+    setFrame(FRAME.target + dy / FRAME.span);
+    if (FRAME.target >= 1) FRAME.held = true;
+  }, { capture: true, passive: false });
+  window.addEventListener('keydown', function (e) {
+    if (frameOpen() || openP || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target !== document.body && e.target !== document.documentElement) return;
+    if (document.body.classList.contains('asking')) return;
+    if (e.key === 'PageDown' || e.key === ' ' || e.key === 'ArrowDown') {
+      e.preventDefault(); e.stopImmediatePropagation(); openFrame();
+    } else if (e.key === 'Tab' && !e.shiftKey) {
+      /* keyboard users can always reach the buttons: Tab opens the sky and
+         lands on "Ask a question" once it's there */
+      e.preventDefault(); e.stopImmediatePropagation();
+      FRAME.focusAsk = true; openFrame();
+      if (FRAME.bar) showBar();
+    }
+  }, true);
+  S.subscribe(function (st) { if (st.openId) openFrame(); });
+
   var dragging = false, downAt = null, moved = 0, last = null;
   canvas.addEventListener('wheel', function (e) {
     e.preventDefault();
@@ -1071,6 +1431,7 @@
     moved += Math.abs(dx) + Math.abs(dy);
     last = { x: e.clientX, y: e.clientY };
     if (moved > 6) {
+      if (!dragging) openFrame();                        // dragging always opens the frame
       dragging = true; canvas.classList.add('dragging');
       var k = visibleHeight(CAM_Z) / window.innerHeight;
       cam.tx -= dx * k; cam.ty += dy * k; clampTarget();
@@ -1207,7 +1568,8 @@
   function nearSilhouette(p, x, y) {
     var d = disc(p), g = 0.08 * d.r * 2, W = window.innerWidth, H = window.innerHeight;
     probeMeshes.length = 0;
-    p.rig.regions.forEach(function (r) { probeMeshes.push(r.mesh); });
+    if (p.frozen) probeMeshes.push(p.merged);
+    else p.rig.regions.forEach(function (r) { probeMeshes.push(r.mesh); });
     var pts = [[0, 0], [g, 0], [-g, 0], [0, g], [0, -g]];
     for (var k = 0; k < pts.length; k++) {
       ndc.set(((x + pts[k][0]) / W) * 2 - 1, -((y + pts[k][1]) / H) * 2 + 1);
@@ -1303,6 +1665,7 @@
   }
   function setTones(p, amount) {
     if (!p.tones) return;
+    thaw(p); p.mergedDirty = true;
     p.rig.regions.forEach(function (r, k) {
       var col = r.mesh.geometry.attributes.color, t = 1 + (p.tones[k] - 1) * amount;
       for (var v = 0; v < col.count; v++) col.setXYZ(v, t, t, t * 0.995);
@@ -1602,7 +1965,7 @@
       var p = shadowList[si], regions = p ? p.rig.regions : [];
       for (var k = 0; k < set.length; k++) {
         var m = set[k], r = regions[k];
-        if (!r || !p.rig.root.visible) { m.visible = false; continue; }
+        if (!r || !planeShown(p)) { m.visible = false; continue; }
         m.geometry = r.mesh.geometry; m.userData.src = r.mesh;
         m.matrixWorld.copy(r.mesh.matrixWorld);
         m.visible = true;
@@ -1615,28 +1978,37 @@
   }
 
   /* =================================================================== intro
-     "One, then many", quickly. The words are HTML and come in by themselves
-     straight away (CSS, in index.html); nothing waits on the 3D. The planes
-     start as soon as the first few sheets are folded and on the GPU:
-     everything you can see, far to near, ever faster, each flying in from
-     beyond the nearest edge (far ones up out of the haze) onto its own
-     place in its loop. A sheet still being folded joins the wave when it's
-     ready. A plane can be hovered once it has landed. One clock (intro.t)
-     drives the wave; every timing is in INTRO. Any click, key, scroll or
-     drag catches it up over 0.4 s and does nothing else; a second visit in
-     a session gets a quicker wave; reduced motion, a crossfade in place.
+     The sky opens, then the planes arrive. On load (framed) the sky holds
+     only a few of the farthest, smallest planes, deep in the haze, swaying.
+     Opening the frame steps you into the sky (the camera eases forward ~6%,
+     scrubbed by the frame's own p), and the first time p passes 0.35 the
+     intro starts and then runs on its own clock, so it always plays out
+     whole, however fast or back and forth the scrolling.
+     - The ~20 biggest, nearest planes are lowered on their threads, from
+       25-40% of the screen above their place, over 2.8-3.6 s (ease-out
+       quart), swinging like a pendulum that's losing energy (z 6-9 deg,
+       period 1.4-1.9 s, tau 1.2 s, a little yaw drift with it), the string
+       lengthening as they come down; the 6 biggest come last.
+     - The rest come out of the haze: always opaque, starting as the exact
+       colour of the sky behind them and clearing to their resting haze over
+       2.2-3.0 s (ease-out cubic), drifting down 40-80 px with a small swing.
+     Far first, near last, roughly centre-out, jittered, over 0-3.8 s. The
+     idle sway runs underneath the whole time and the swing hands over to it
+     over 600 ms, so no plane is ever at rest. Nothing is ever see-through.
+     Nothing comes down across the compact title. A second visit in the
+     session, or reduced motion: no intro, everything already hung.
      ?introSpeed=0.25 slows it down. */
   var INTRO = {
-    firstBatch: 10,                                     // sheets ready before the wave starts
-    /* start times: the k-th of n at span * (k / (n-1))^(1/pw), the power set
-       so the first gap is firstGap — the first few ~120 ms apart, the last
-       a few ms — plus jitter; each flight dur +- durJitter */
-    full:    { span: 0.65, firstGap: 0.12, jitter: 0.04, dur: 0.9, durJitter: 0.15 },
-    repeat:  { span: 0.25, firstGap: 0.05, jitter: 0.02, dur: 0.5, durJitter: 0.1 },
-    reduced: { fade: 0.5 },
-    farZ: -12, hazeDepth: 18,
-    spawn: 0.2,                                         // the only fade: the first 200 ms of a flight
-    wobble:  { deg: 10, decay: 0.42, period: 0.62, life: 1.6 },
+    firstBatch: 10,                                     // sheets ready before anything shows
+    trigger: 0.35,                                      // the frame's p that starts it
+    dolly: 0.06,                                        // camera this much further back while framed
+    preview: { count: 4, haze: 0.8 },                   // the few far planes there on load
+    emerge: { from: 0, to: 2.6, dur: [2.2, 3.0], drift: [40, 80], swayDeg: [3, 4], period: [1.6, 2.2] },
+    lower:  { max: 20, share: 0.32, from: 0.9, to: 2.6, dur: [2.8, 3.6], rise: [0.25, 0.40],
+              swayDeg: [6, 9], period: [1.4, 1.9], tau: 1.2, yawDeg: 4, hazeShare: 0.4 },
+    last:   { count: 6, from: 2.6, to: 3.8 },          // the biggest, last
+    handoff: 0.6,                                       // the swing crossfades into the idle sway
+    late: 0.8,                                          // a plane that comes into view later: out of the haze over this
     skip: 0.4
   };
   function bezierEase(x1, y1, x2, y2) {
@@ -1653,13 +2025,12 @@
       return 3 * y1 * t * v * v + 3 * y2 * t * t * v + t * t * t;
     };
   }
-  var EASE_PLANE = bezierEase(0.22, 1, 0.36, 1);       // fast entry, decelerating into cruise
   var EASE_TEXT = bezierEase(0.25, 0.1, 0.25, 1);      // a gentle ease-out
   function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
   function seeded(i, k) { var x = Math.sin(i * 91.7 + k * 12.3) * 43758.5453; return x - Math.floor(x); }
 
   var intro = { phase: 'loading', kind: 'full', t: 0, end: 0, skipRate: 0, speed: 1, paused: false, dolly: 0,
-                readyFrames: 0, slotOf: {}, nSlots: 0, allBuilt: false, skipAsked: false };
+                readyFrames: 0, plan: null, nSlots: 0, allBuilt: false };
   (function () {
     var m = /[?&]introSpeed=([\d.]+)/.exec(location.search);
     if (m) intro.speed = Math.max(0.05, parseFloat(m[1]) || 1);
@@ -1676,6 +2047,7 @@
   var dom = {};
   function grabDom() {
     dom.mast = document.querySelector('.masthead');
+    dom.mini = document.querySelector('.mast-mini');
     dom.h1 = dom.mast && dom.mast.querySelector('h1');
     dom.p = dom.mast && dom.mast.querySelector('p');
     dom.contact = document.querySelector('.contact');
@@ -1706,51 +2078,108 @@
     camera.position.set(cam.x, cam.y, CAM_Z); camera.updateMatrixWorld();
     var W = window.innerWidth, H = window.innerHeight, vis = [], rest = [];
     for (var i = 0; i < N; i++) {
-      var v = planPos(i), sp = toScreen(v), m = 7 * PLANE_SCALE * H / visibleHeight(CAM_Z - v.z) + 24;
-      var o = { i: i, z: v.z, d: Math.hypot(sp.x - W / 2, sp.y - H / 2) };
+      var v = planPos(i), sp = toScreen(v), m = 7 * PLANE_SCALE * H / visibleHeight(CAM_Z - v.z) + 24 + 0.06 * W;
+      var o = { i: i, x: sp.x, y: sp.y, dist: CAM_Z - v.z, d: Math.hypot(sp.x - W / 2, sp.y - H / 2) };
       (sp.front && sp.x > -m && sp.x < W + m && sp.y > -m && sp.y < H + m ? vis : rest).push(o);
     }
-    vis.sort(function (a, b) { return a.z - b.z; });
+    intro.plan = planIntro(vis);
+    intro.nSlots = vis.length;
+    /* folded in the order they'll appear */
+    vis.sort(function (a, b) { return (intro.plan[a.i] ? intro.plan[a.i].t0 : 9) - (intro.plan[b.i] ? intro.plan[b.i].t0 : 9); });
     rest.sort(function (a, b) { return a.d - b.d; });
-    intro.slotOf = {}; intro.nSlots = vis.length;
-    vis.forEach(function (o, k) { intro.slotOf[o.i] = k; });
     return vis.concat(rest).map(function (o) { return o.i; });
   }
-  function waveCfg() { return INTRO[intro.kind === 'repeat' ? 'repeat' : 'full']; }
-  function slotTime(k, n) {
-    var c = waveCfg();
-    if (n <= 1) return 0;
-    var pw = n > 2 && c.span > c.firstGap ? Math.log(n - 1) / Math.log(c.span / c.firstGap) : 1;
-    var t = c.span * Math.pow(k / (n - 1), 1 / pw);
-    return Math.max(0, t + (seeded(k, 1) - 0.5) * 2 * c.jitter * clamp01((k - 1) / 4));   // the first two keep their beat
+  /* Who comes in how, and when. list: the planes in view (at the finished
+     camera), each { i, x, y (screen px), dist (from the eye), flyer }.
+     Returns i -> { mode: 'preview' | 'emerge' | 'lower', t0, dur, ... }. */
+  function planIntro(list) {
+    var W = window.innerWidth, H = window.innerHeight, plan = {}, n = list.length;
+    if (!n || intro.kind !== 'full') return plan;
+    var dMin = Infinity, dMax = -Infinity, cx = W / 2, cy = H * 0.25, diag = Math.hypot(W, H);
+    list.forEach(function (o) { dMin = Math.min(dMin, o.dist); dMax = Math.max(dMax, o.dist); });
+    list.forEach(function (o) {
+      o.s = H / visibleHeight(o.dist);                  // px per inch at its depth
+      o.r = 5 * PLANE_SCALE * o.s;                      // roughly its half-size on screen
+      o.near = dMax > dMin ? (dMax - o.dist) / (dMax - dMin) : 0;
+      o.key = 0.55 * o.near + 0.3 * Math.hypot(o.x - cx, o.y - cy) / diag + 0.15 * seeded(o.i, 7);   // far first, centre-out
+    });
+    /* the compact title's place once the sky is open: nothing comes down across it */
+    var mw = dom.mini ? dom.mini.offsetWidth : 200, pad = 20;
+    var mr = { x0: pad - 10, y0: pad - 10, x1: pad + mw + 10, y1: pad + 48 };
+    function crosses(o, rise) {
+      return o.x + o.r * 0.8 > mr.x0 && o.x - o.r * 0.8 < mr.x1 && o.y - rise - o.r * 0.6 < mr.y1 && o.y + o.r * 0.6 > mr.y0;
+    }
+    function pick(range, k) { return range[0] + seeded(k, 11) * (range[1] - range[0]); }
+    /* spread over [from, to] in order, each nudged within its slot (organic, not a grid) */
+    function times(group, from, to, salt) {
+      var m = group.length;
+      group.forEach(function (o, k) {
+        var slot = (k + 0.5 + (seeded(o.i, salt) - 0.5) * 0.9) / Math.max(1, m);
+        o.t0 = from + (to - from) * clamp01(slot);
+      });
+    }
+    var used = {};
+    /* on load: a few of the farthest, smallest, well inside the frame, spread out */
+    var Tb = H * 0.3, prev = [];
+    list.slice().sort(function (a, b) { return b.dist - a.dist; }).forEach(function (o) {
+      if (prev.length >= INTRO.preview.count || o.flyer) return;
+      if (o.y < Tb || o.y > H * 0.88 || o.x < W * 0.1 || o.x > W * 0.9) return;
+      if (prev.some(function (q) { return Math.abs(q.x - o.x) < W / 6; })) return;
+      prev.push(o); used[o.i] = 1;
+    });
+    /* lowered on threads: the biggest; the six biggest of those come last */
+    var L = INTRO.lower, nL = Math.min(L.max, Math.round(n * L.share));
+    var lowered = list.filter(function (o) { return !o.flyer && !used[o.i]; })
+      .sort(function (a, b) { return b.s - a.s; })
+      .filter(function (o) { return !crosses(o, L.rise[1] * H); }).slice(0, nL);
+    lowered.forEach(function (o) { used[o.i] = 1; });
+    var nLast = Math.min(INTRO.last.count, Math.round(lowered.length * 0.35));
+    var last = lowered.slice(0, nLast), mid = lowered.slice(nLast);
+    var rest = list.filter(function (o) { return !used[o.i]; });
+    prev.forEach(function (o) { o.t0 = 0.05 + seeded(o.i, 12) * 0.35; });
+    rest.sort(function (a, b) { return a.key - b.key; }); times(rest, INTRO.emerge.from, INTRO.emerge.to, 13);
+    mid.sort(function (a, b) { return a.key - b.key; }); times(mid, L.from, L.to, 14);
+    last.sort(function (a, b) { return a.s - b.s; }); times(last, INTRO.last.from, INTRO.last.to, 15);
+    function base(o, mode) {
+      return { mode: mode, t0: o.t0, wpp: visibleHeight(o.dist) / H, period: 0, phase: seeded(o.i, 10) < 0.5 ? 0 : Math.PI,
+               sway: 0, yaw: 0, rise: 0, drift: 0, dur: 0 };
+    }
+    var E = INTRO.emerge;
+    prev.concat(rest).forEach(function (o) {
+      var e = base(o, used[o.i] ? 'preview' : 'emerge');
+      if (prev.indexOf(o) >= 0) e.mode = 'preview';
+      e.dur = pick(E.dur, o.i * 3 + 1);
+      e.drift = crosses(o, E.drift[1]) ? 0 : pick(E.drift, o.i * 3 + 2);
+      e.sway = pick(E.swayDeg, o.i + 5) * (seeded(o.i, 9) < 0.5 ? -1 : 1);
+      e.period = pick(E.period, o.i + 7);
+      plan[o.i] = e;
+    });
+    lowered.forEach(function (o) {
+      var e = base(o, 'lower');
+      e.dur = pick(L.dur, o.i * 3 + 1);
+      e.rise = pick(L.rise, o.i * 3 + 2) * H;
+      e.sway = pick(L.swayDeg, o.i + 5) * (seeded(o.i, 9) < 0.5 ? -1 : 1);
+      e.period = pick(L.period, o.i + 7);
+      e.yaw = (seeded(o.i, 16) - 0.5) * 2 * L.yawDeg;
+      plan[o.i] = e;
+    });
+    return plan;
   }
   function onView(p) {
     var d = disc(p), W = window.innerWidth, H = window.innerHeight, rr = d.r * 1.1 + 24;
     return d.front && d.x + rr > 0 && d.x - rr < W && d.y + rr > 0 && d.y - rr < H;
   }
-  /* one plane's way in, starting at intro time t0 */
-  function planEntry(p, t0) {
+  /* one plane's way in, from its place in the plan */
+  function planEntry(p, pl) {
     (p.swing || p.fly).updateMatrixWorld(true);
-    var W = window.innerWidth, H = window.innerHeight;
-    if (intro.kind === 'reduced') {
-      p.ent = { mode: 'fade', t0: t0, dur: INTRO.reduced.fade };
-    } else {
-      var c = waveCfg(), dur = c.dur * (1 + (seeded(p.i, 2) - 0.5) * 2 * c.durJitter);
-      if (p.z < INTRO.farZ) p.ent = { mode: 'haze', t0: t0, dur: dur, wob: 0 };
-      else {
-        /* from beyond the nearest edge, onto its place */
-        var d = disc(p), rest = centreOf(p), rad = d.r;
-        var dl = d.x, dr = W - d.x, db = H - d.y, sx, sy;
-        var slide = (seeded(p.i, 4) - 0.5) * 0.3;
-        if (dl <= dr && dl <= db) { sx = -rad - 40; sy = d.y + slide * dl + 0.15 * dl; }
-        else if (dr <= db) { sx = W + rad + 40; sy = d.y + slide * dr + 0.15 * dr; }
-        else { sx = d.x + (d.x < W / 2 ? -1 : 1) * (0.45 + Math.abs(slide)) * db; sy = H + rad + 40; }   // diagonally, never straight up
-        var start = toWorld(sx, sy, p.z).sub(rest);
-        var ctrl = start.clone().multiplyScalar(0.45); ctrl.y += start.length() * 0.12;
-        p.ent = { mode: 'edge', t0: t0, dur: dur, p0: start, p1: ctrl, wob: seeded(p.i, 3) < 0.5 ? -1 : 1 };
-      }
-    }
-    intro.end = Math.max(intro.end, p.ent.t0 + Math.max(p.ent.dur, p.ent.wob ? INTRO.wobble.life : 0));
+    var e = {};
+    for (var k in pl) e[k] = pl[k];
+    e.riseW = (pl.rise || 0) * pl.wpp; e.driftW = (pl.drift || 0) * pl.wpp;
+    e.swayR = (pl.sway || 0) * Math.PI / 180; e.yawR = (pl.yaw || 0) * Math.PI / 180;
+    e.h0 = pl.mode === 'preview' ? INTRO.preview.haze : 1;
+    if (!p.flyer && e.riseW > p.len - 2) e.riseW = Math.max(0, p.len - 2);          // never above its own tie
+    p.ent = e;
+    intro.end = Math.max(intro.end, e.t0 + e.dur + INTRO.handoff);
   }
   /* a plane has just been built: in view, it gets its place in the wave (or
      joins it now, if the wave has passed its turn); out of view, it's
@@ -1761,64 +2190,68 @@
       [p.front, p.back, p.cream].forEach(function (tx) { if (tx) renderer.initTexture(tx); });
     }
     (p.swing || p.fly).updateMatrixWorld(true);
-    if (!onView(p)) { p.appear = 1; return; }
-    if (intro.phase === 'done') { p.appear = 0; p.lateIn = true; return; }
-    p.appear = 0;
-    var slot = intro.slotOf[p.i];
-    var t0 = intro.kind === 'reduced' ? 0 : slot != null ? slotTime(slot, intro.nSlots) : 0;
-    if (intro.phase === 'running') t0 = Math.max(t0, intro.t + 0.03);
-    planEntry(p, t0);
+    if (intro.kind !== 'full') { p.appear = 1; return; }       // no intro: already hung
+    if (!onView(p)) {
+      p.appear = 1;
+      /* hung below the screen, its string still runs up through it: it
+         waits for the planes to start arriving */
+      if (p.thread && intro.phase !== 'done') p.threadLate = true;
+      return;
+    }
+    if (intro.phase === 'done') { p.appear = 1; p.emerge = 1; p.lateIn = true; return; }
+    var pl = intro.plan && intro.plan[p.i];
+    if (!pl || (intro.phase === 'running' && intro.t > pl.t0 - 0.03)) {
+      /* not in the plan (it's only in view with the camera further back) or
+         folded after its turn: it comes out of the haze now, in place */
+      var t0 = intro.phase === 'running' ? intro.t + 0.03 : seeded(p.i, 17) * INTRO.emerge.to;
+      pl = { mode: 'emerge', t0: t0, dur: 2.4, wpp: visibleHeight(CAM_Z - p.z) / window.innerHeight,
+             drift: 0, sway: 3, period: 1.9, phase: 0, yaw: 0, rise: 0 };
+    }
+    planEntry(p, pl);
+    p.appear = pl.mode === 'preview' ? 1 : 0;
+    p.emerge = p.ent.h0;
   }
 
-  var qFl = new T.Quaternion(), qFp = new T.Quaternion(), qRestTmp = new T.Quaternion(), qWob = new T.Quaternion();
-  var vA = new T.Vector3(), vB = new T.Vector3(), vSide = new T.Vector3(), Z_AXIS = new T.Vector3(0, 0, 1);
-  function bez(e, k, out) {
-    var u = 1 - k;
-    if (e.mode === 'throw') {                             // cubic, ending on its place
-      return out.set(0, 0, 0).addScaledVector(e.p0, u * u * u).addScaledVector(e.p1, 3 * u * u * k).addScaledVector(e.p2, 3 * u * k * k);
-    }
-    return out.set(0, 0, 0).addScaledVector(e.p0, u * u).addScaledVector(e.p1, 2 * u * k);
+  var qWob = new T.Quaternion(), qRollW = new T.Quaternion(), qParR = new T.Quaternion(), Z_AXIS = new T.Vector3(0, 0, 1);
+  function easeOutQuart(u) { var v = 1 - u; return 1 - v * v * v * v; }
+  function easeOutCubic(u) { var v = 1 - u; return 1 - v * v * v; }
+  /* turn a plane about the view axis, about the point its string meets it
+     (the tilt group's origin), whatever its parents are doing */
+  function rollWorld(p, a) {
+    if (!a) return;
+    p.tilt.parent.getWorldQuaternion(qParR);
+    qRollW.setFromAxisAngle(Z_AXIS, a);
+    qAdj.copy(qParR).invert().multiply(qRollW).multiply(qParR);
+    p.tilt.quaternion.premultiply(qAdj);
   }
-  /* one plane's arrival at intro time t */
-  function arrive(p, t) {
+  /* one plane at intro time t (waiting: the intro hasn't been set off yet) */
+  function arrive(p, t, waiting) {
     var e = p.ent;
-    p.introHaze = 0; p.introScale = 1;
     if (!e) return;
-    if (t < e.t0) { p.appear = 0; return; }
-    var u = clamp01((t - e.t0) / e.dur), k = EASE_PLANE(u), tau = t - e.t0;
-    if (e.mode === 'fade') { p.appear = EASE_TEXT(u); return; }
-    var target = p.flyer ? p.fly : p.hang;
-    /* the only fade: its first 200 ms of travel */
-    p.appear = clamp01(tau / INTRO.spawn);
-    if (e.mode === 'haze') {
-      /* up out of the haze: from deeper, small and soft, to its place */
-      p.introScale = 0.7 + 0.3 * k;
-      p.introHaze = 0.35 * (1 - k);
-      target.position.z -= INTRO.hazeDepth * (1 - k);
-      target.position.y -= 1.5 * (1 - k);
+    if (waiting || t < e.t0) {
+      /* not its turn: the few on show sit deep in the haze; the rest aren't there */
+      if (e.mode === 'preview') { p.appear = 1; p.emerge = e.h0; } else { p.appear = 0; p.emerge = 1; }
+      return;
+    }
+    p.appear = 1;
+    var tau = t - e.t0, u = clamp01(tau / e.dur), lift;
+    if (e.mode === 'lower') {
+      lift = e.riseW * (1 - easeOutQuart(u));
+      p.emerge = 1 - easeOutCubic(clamp01(u / INTRO.lower.hazeShare));
     } else {
-      var off = bez(e, k, vA);
-      target.position.add(off);
-      /* nose along the way it's moving, easing into its resting pose */
-      var ahead = bez(e, Math.min(1, k + 0.02), vB).sub(off);
-      if (ahead.lengthSq() > 1e-10 && u < 1) {
-        qFl.setFromAxisAngle(Y_AXIS, Math.atan2(ahead.x, ahead.z) - p.noseAng);
-        var side = vSide.crossVectors(p.noseDir, Y_AXIS).normalize();
-        var climb = Math.max(-0.45, Math.min(0.45, -Math.atan2(ahead.y, Math.hypot(ahead.x, ahead.z) + 1e-6) * 0.45));
-        qFp.setFromAxisAngle(side, climb);
-        qFl.multiply(qFp);
-        if (!p.flyer) qFl.premultiply(qRestTmp.copy(p.swing.quaternion).invert());
-        qRestTmp.copy(target.quaternion);
-        target.quaternion.slerpQuaternions(qFl, qRestTmp, smooth(0.45, 1, k));
-      }
+      lift = e.driftW * (1 - easeOutCubic(u));
+      p.emerge = e.h0 * (1 - easeOutCubic(u));
     }
-    /* steadying after the flight: a damped roll, gone to nothing by its end */
-    if (e.wob && tau < INTRO.wobble.life && !reduceMotion) {
-      var a = e.wob * INTRO.wobble.deg * Math.PI / 180 * Math.exp(-tau / INTRO.wobble.decay) * Math.cos(2 * Math.PI * tau / INTRO.wobble.period);
-      a *= 1 - smooth(INTRO.wobble.life - 0.5, INTRO.wobble.life, tau);
-      qWob.setFromAxisAngle(p.noseDir, a);
-      p.tilt.quaternion.multiply(qWob);
+    /* the swing on its string, losing energy, crossfading into the idle sway */
+    var env = Math.exp(-tau / INTRO.lower.tau) * (1 - smooth(e.dur, e.dur + INTRO.handoff, tau));
+    var swing = reduceMotion ? 0 : e.swayR * env * Math.sin(2 * Math.PI * tau / e.period + e.phase);
+    var target = p.flyer ? p.fly : p.hang;
+    target.position.y += lift;
+    if (!p.flyer) {
+      if (e.yawR) p.hang.rotation.y += e.yawR * env;
+      if (p.thread) p.thread.scale.y = Math.max(0.001, 1 - (lift + (p.bobIdle || 0)) / p.len);    // as long as it has come down
     }
+    rollWorld(p, swing);
   }
 
   /* The words stay put; planes passing behind them thin out (and threads
@@ -1836,8 +2269,9 @@
   function measureRects() {
     if (measureTick-- > 0) return;
     measureTick = 20;
-    var a = boxOf(dom.h1, 8), b = boxOf(dom.p, 8);
-    var mast = a && b ? { x0: Math.min(a.x0, b.x0), y0: a.y0, x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) } : a;
+    /* framed, the title sits on the white above the sky; open, the compact
+       title is in the frame's corner */
+    var mast = FRAME.bar ? boxOf(dom.mini, 8) : null;
     var hint = dom.hint && dom.hint.classList.contains('show') ? boxOf(dom.hint, 8) : null;
     textBoxes = [mast, boxOf(dom.contact, 8), hint];
     var dpr = renderer.getPixelRatio(), H = window.innerHeight;
@@ -1850,16 +2284,17 @@
   /* per frame: the wave (while it runs), and always the planes behind the
      words thinning out */
   function introFrame(dt) {
+    /* set off the first time the frame opens past INTRO.trigger; then it runs on time */
+    if (intro.phase === 'waiting' && FRAME.p >= INTRO.trigger) runIntro();
     if (intro.phase === 'running' && !intro.paused) intro.t += dt * Math.max(intro.speed, intro.skipRate);
     measureRects();
     var coverK = 1 - Math.exp(-dt * 2 / 0.25), coverNow = (intro.frame = (intro.frame || 0) + 1) % 2 === 0;
     var running = intro.phase === 'running';
     planes.forEach(function (p) {
-      if (running) {
-        arrive(p, intro.t);
-        if (p.introScale !== 1) p.tilt.scale.multiplyScalar(p.introScale);
-      } else if (intro.phase !== 'done' && p.ent) p.appear = 0;     // waiting for the wave
-      if (p.lateIn) { p.appear = Math.min(1, (p.appear || 0) + dt / 0.3); if (p.appear >= 1) p.lateIn = false; }
+      if (running) arrive(p, intro.t);
+      else if (intro.phase !== 'done' && p.ent) arrive(p, 0, true);
+      /* came into view after the intro: out of the haze, in place (never see-through) */
+      if (p.lateIn) { p.emerge = Math.max(0, p.emerge - dt / INTRO.late); if (!p.emerge) p.lateIn = false; }
       /* behind the words: thin out (checked every other frame) */
       if (!coverNow) return;
       var cv = 0;
@@ -1878,54 +2313,57 @@
     if (running && intro.allBuilt && intro.t >= intro.end) finishIntro();
   }
 
+  /* the first sheets are ready: show what's there before the sky opens (or
+     set off at once, if it's already open) */
   function startIntro() {
+    if (intro.kind !== 'full') { finishIntro(); return; }
+    intro.phase = 'waiting'; intro.t = 0;
+    if (FRAME.p >= INTRO.trigger) runIntro();
+  }
+  function runIntro() {
     intro.phase = 'running'; intro.t = 0; intro.skipRate = 0;
-    if (intro.skipAsked) skipIntro();
     try { sessionStorage.setItem('qf-intro-seen', '1'); } catch (e) {}
   }
   function skipIntro() {
-    if (intro.phase !== 'running') { intro.skipAsked = true; return; }
+    if (intro.phase !== 'running') return;
     intro.paused = false;
     intro.skipRate = Math.max(intro.speed, (intro.end - intro.t) / INTRO.skip, 3);
   }
   function finishIntro() {
     intro.phase = 'done'; intro.t = Math.max(intro.t, intro.end);
-    planes.forEach(function (p) { if (p.ent) { p.appear = 1; p.ent = null; } p.introScale = 1; p.introHaze = 0; });
+    planes.forEach(function (p) {
+      if (p.ent) { p.appear = 1; p.emerge = 0; p.ent = null; }
+    });
   }
-  /* the hint: only after two quiet seconds, and never again once you've
-     scrolled, dragged or clicked */
+  /* the hint shows from the start, and goes for good after the first scroll,
+     drag or click in the open sky */
   var hintState = { interacted: false, timer: null };
-  function armHint() {
-    if (hintState.interacted || !dom.hint) return;
-    hintState.timer = setTimeout(function () { if (!hintState.interacted) dom.hint.classList.add('show'); }, 2000);
-  }
+  if (dom.hint) dom.hint.classList.add('show');
   function interacted() {
     if (hintState.interacted) return;
     hintState.interacted = true;
     clearTimeout(hintState.timer);
     if (dom.hint) dom.hint.classList.remove('show');
   }
-  /* any click, key, scroll or drag during the intro fast-forwards it (and
-     does nothing else) */
+  /* a click or a touch on the sky while the planes are arriving catches the
+     intro up (and does nothing else); scrolling never does — it opens the
+     frame, and the intro always plays out whole */
   var swallowUp = false;
-  ['pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(function (type) {
+  ['pointerdown', 'touchstart'].forEach(function (type) {
     window.addEventListener(type, function (e) {
-      var atSky = type === 'keydown' ? (e.target === document.body || e.target === document.documentElement) : e.target === canvas;
-      if (intro.phase !== 'done' && atSky) {
-        skipIntro();
-        if (type === 'pointerdown' || type === 'touchstart') swallowUp = true;
-        if (type === 'wheel' || type === 'keydown') e.preventDefault();
+      if (intro.phase === 'running' && e.target === canvas) {
+        skipIntro(); swallowUp = true;
         e.stopImmediatePropagation();
-        return;
       }
-      if (intro.phase === 'done' && (type === 'pointerdown' || type === 'wheel') && e.target === canvas) interacted();
     }, { capture: true, passive: false });
+  });
+  ['pointerdown', 'wheel'].forEach(function (type) {
+    window.addEventListener(type, function (e) { if (e.target === canvas && frameOpen()) interacted(); }, { passive: true });
   });
   window.addEventListener('pointerup', function (e) {
     if (swallowUp) { swallowUp = false; e.stopImmediatePropagation(); }
   }, true);
   S.subscribe(function (st) { if (st.openId || st.panelOpen) document.body.classList.add('oriented'); });
-  armHint();
 
   /* -------------------------------------------------------- the live filter
      Whatever the panel shows is also what the sky shows. Planes that don't
@@ -2113,14 +2551,21 @@
   });
 
   /* ------------------------------------------------------------------ loop */
-  var lastT = performance.now();
+  var lastT = performance.now(), breathT = 0;
   function frame(now, manual) {
     if (!manual) requestAnimationFrame(frame);
     var dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
     var k = 1 - Math.pow(0.0008, dt);
     cam.x += (cam.tx - cam.x) * k; cam.y += (cam.ty - cam.y) * k;
-    camera.position.set(cam.x, cam.y, CAM_Z * (1 + intro.dolly));
-    camera.quaternion.set(0, 0, 0, 1);
+    /* framed, the camera stands a little further back; opening the frame
+       steps you into the sky. And always, a very slow breathing (+-0.6% of
+       its distance, +-0.3 deg of roll, 12-16 s), held still while a sheet
+       is open or with reduced motion. */
+    if (!openP && !anim && !reduceMotion) breathT += dt;
+    var bA = CAM_Z * 0.006, bT = breathT * 2 * Math.PI;
+    var bx = bA * 0.7 * Math.sin(bT / 14 + 0.3), by = bA * 0.5 * Math.sin(bT / 16 + 1.1), bz = bA * Math.sin(bT / 12 + 2.0);
+    camera.position.set(cam.x + bx, cam.y + by, CAM_Z * (1 + INTRO.dolly * (1 - FRAME.p)) + bz);
+    camera.quaternion.setFromAxisAngle(Z_AXIS, 0.3 * Math.PI / 180 * Math.sin(bT / 15 + 0.5));
     camera.updateMatrixWorld();
 
     pointerHover(now);
@@ -2182,14 +2627,20 @@
       }
       var away = p.state === 'away' || p.launching;
       var u = p.mats[0].userData;
-      u.dim.value = away ? 0 : Math.min(1, fx.dim + (p.introHaze || 0));
+      u.dim.value = away ? 0 : fx.dim;
+      u.emerge.value = away ? 0 : (p.emerge || 0);
       /* its opacity, as the blend constant (the material itself never
-         changes): arriving, behind the title, filtered out. Fully clear, it
-         isn't drawn at all, so it can't hide anything behind it. */
+         changes): behind the title, filtered out; appear is only ever 0 (not
+         there yet) or 1. Fully clear, it isn't drawn at all. */
       var op = away ? 1 : (p.appear == null ? 1 : p.appear) * (1 - 0.65 * (p.cover || 0)) * (1 - 0.85 * fx.dim);
       u.fade.value = op;
       var show = op > 0.004;
-      if (p.rig.root.visible !== show) p.rig.root.visible = show;
+      if (planeShown(p) !== show) planeVisible(p, show);
+      /* frozen while it only hangs; live while anything moves its folds */
+      var live = away || fx.catT || fx.cat > 0.01 || (anim && anim.p === p) ||
+        (p.wb && (p.wb.on || p.wb.set || Math.abs(p.wb.val) > 1e-3));
+      if (live) thaw(p);
+      else if (!p.frozen && (p.stillFrames = (p.stillFrames || 0) + 1) > 30) freeze(p);
       /* the wings: only while it hangs or flies (an opening or a launch
          drives the creases itself) */
       if (p.wb) {
@@ -2209,12 +2660,21 @@
         continue;
       }
       p.swing.position.z = p.z + zoff;
-      p.hang.position.set(0, p.hangY + bob, 0);              // set whole every frame (the intro adds to it)
+      /* the idle bob (half as much with reduced motion); its string follows */
+      var ik = reduceMotion ? 0.5 : 1, ts0 = now / 1000;
+      p.bobIdle = away ? 0 : ik * p.idle.B * Math.sin(2 * Math.PI * ts0 / p.idle.Tb + p.idle.phb) * visibleHeight(CAM_Z - p.z) / window.innerHeight;
+      p.hang.position.set(0, p.hangY + bob + p.bobIdle, 0);  // set whole every frame (the intro adds to it)
+      if (p.thread) p.thread.scale.y = 1 - p.bobIdle / p.len;
       if (!away) p.tilt.scale.setScalar(PLANE_SCALE * sc);
-      if (p.threadA < 1 && p.builtAt) p.threadA = EASE_TEXT(Math.min(1, (now - p.builtAt) / 400));
+      if ((p.ent && intro.phase !== 'done') || p.lateIn) p.threadA = (p.appear || 0) * (1 - (p.emerge || 0));   // a string comes out of the haze with its plane
+      else if (p.threadLate) {
+        p.threadA = intro.phase === 'done' ? 1 : intro.phase === 'running' ? EASE_TEXT(clamp01((intro.t - 1.2) / 1.6)) : 0;
+        if (p.threadA >= 1) p.threadLate = false;
+      } else if (p.threadA < 1 && p.builtAt) p.threadA = EASE_TEXT(Math.min(1, (now - p.builtAt) / 400));
       if (p.stringMat) p.stringMat.opacity = p.stringOpacity * (1 - 0.8 * fx.dim) * (p.threadA == null ? 1 : p.threadA);
       if (reduceMotion) {
         p.hang.rotation.set(0, p.yaw0, 0); p.tilt.rotation.set(p.pitch, 0, p.roll);
+        if (p.state !== 'away') rollWorld(p, 0.5 * p.idle.A * Math.sin(2 * Math.PI * ts0 / p.idle.T + p.idle.ph));
         continue;
       }
       var wx = gust * (0.6 * Math.sin(s * 0.35 - p.x * 0.03 + 0.2) +
@@ -2250,9 +2710,12 @@
         qAdj.copy(qPar).invert().multiply(qLean).multiply(qPar);
         p.tilt.quaternion.premultiply(qAdj);
       }
+      /* the idle rock, slow and small */
+      rollWorld(p, p.idle.A * Math.sin(2 * Math.PI * ts0 / p.idle.T + p.idle.ph));
     }
     /* compiled and uploaded last frame: one clean frame, then it starts */
     if (intro.phase === 'ready' && ++intro.readyFrames >= 2) startIntro();
+    frameTick(dt);
     introFrame(dt);
     placeShadows();
 
@@ -2305,7 +2768,7 @@
      for the compile). */
   function warmUp() {
     var hidden = [];
-    planes.forEach(function (p) { if (!p.rig.root.visible) { p.rig.root.visible = true; hidden.push(p); } });
+    planes.forEach(function (p) { if (!planeShown(p)) { planeVisible(p, true); hidden.push(p); } });
     var sm = shadowSets[0][0], sp0 = planes[0];
     if (sp0) { sm.geometry = sp0.rig.regions[0].mesh.geometry; sm.userData.src = sp0.rig.regions[0].mesh; sm.visible = true; }
     renderer.compile(wall, camera);
@@ -2314,7 +2777,7 @@
       planes.forEach(function (p) { [p.front, p.back, p.cream].forEach(function (tx) { if (tx) renderer.initTexture(tx); }); });
       renderer.initTexture(HAZE.skyMap.value);
     }
-    hidden.forEach(function (p) { p.rig.root.visible = false; });
+    hidden.forEach(function (p) { planeVisible(p, false); });
     sm.visible = false;
   }
   /* the sheets' type is set in Bitter, so it waits for the font — but not
@@ -2343,6 +2806,7 @@
   cam.tx = cam.x = b0.minX + COL_W * 0.4;
   cam.ty = cam.y = b0.maxY - visibleHeight(CAM_Z) * 0.34; clampTarget();
   cam.x = cam.tx; cam.y = cam.ty;
+  FRAME.home = { tx: cam.tx, ty: cam.ty };
   requestAnimationFrame(frame);
   /* Fold the planes a frame's worth at a time — the ones in view first, far
      to near, in the wave's order. As soon as the first few are ready (and on
@@ -2388,6 +2852,8 @@
              and throw it into the holding pattern; resolves when it lands */
           launch: launch,
           isOpen: function () { return !!openP; },
+          /* the opening frame: GARDEN.frame.p, .set(0..1), .home */
+          frame: { get p() { return FRAME.p; }, get target() { return FRAME.target; }, set: function (v) { setFrame(v); }, get home() { return FRAME.home; } },
           timings: function () { return __qfTimings; },
           /* for tuning the wave: GARDEN.intro.replay('full' | 'repeat' | 'reduced'), .speed = 0.25 */
           intro: {
@@ -2399,16 +2865,17 @@
               intro.kind = kind || 'full'; intro.end = 0;
               var vis = [];
               planes.forEach(function (p) {
-                p.ent = null; p.introScale = 1; p.introHaze = 0; p.lateIn = false;
+                p.ent = null; p.emerge = 0; p.lateIn = false;
                 if (onView(p)) vis.push(p); else p.appear = 1;
               });
-              vis.sort(function (a, b) { return a.z - b.z; });
-              vis.forEach(function (p, k) { p.appear = 0; planEntry(p, intro.kind === 'reduced' ? 0 : slotTime(k, vis.length)); });
+              intro.plan = planIntro(vis.map(function (p) { var d = disc(p); return { i: p.i, x: d.x, y: d.y, dist: d.dist, flyer: !!p.flyer }; }));
+              vis.forEach(function (p) { if (intro.plan[p.i]) { planEntry(p, intro.plan[p.i]); p.appear = 0; } });
               intro.phase = 'running'; intro.paused = false; intro.t = 0; intro.skipRate = 0;
             },
             schedule: function () {
               return planes.filter(function (p) { return p.ent; }).map(function (p) {
-                return { i: p.i, z: +p.z.toFixed(1), mode: p.ent.mode, t0: +p.ent.t0.toFixed(3), dur: +p.ent.dur.toFixed(3) };
+                return { i: p.i, z: +p.z.toFixed(1), mode: p.ent.mode, t0: +p.ent.t0.toFixed(3), dur: +p.ent.dur.toFixed(3),
+                         rise: Math.round(p.ent.rise || 0), drift: Math.round(p.ent.drift || 0), sway: +(p.ent.sway || 0).toFixed(1) };
               }).sort(function (a, b) { return a.t0 - b.t0; });
             }
           },
