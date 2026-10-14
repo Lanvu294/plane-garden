@@ -158,12 +158,19 @@ curl -X DELETE "https://plane-garden.vercel.app/api/questions?id=ID" -H "x-admin
 **Framed.** The page opens white, on a 12-column grid: 64 px margins and
 20 px gutters (40 px margins under 1100 px wide; 4 columns, 16 px margins and
 12 px gutters on phones).
-- **Heading:** *Helping you land in the right place.* (Bitter Regular, 38 px)
-  sits on the left margin, in brick red `#82423D`.
-- **Paragraph:** *CMU IEX is here to answer your questions…* follows (20/28 px)
-  and wraps at about seven columns.
-- **The sky frame:** sits on the margins, 176 px down (212 px on phones), with
-  square corners.
+- **The words above the frame** sit on the grid in three blocks, all starting
+  at the same height, in Bitter, brick red `#82423D`:
+  - **Columns 1–6:** the lede (*CMU IEX is here to answer your questions…*,
+    22.5/27.5 px), then the big *Dear IEX, I want to know ______* (44 px). The
+    blank reads as "…" to a screen reader.
+  - **Columns 7–9:** what IEX is (14/19 px).
+  - **Columns 10–12:** *Whatever you choose,* / ***IEX is here to help you land
+    in the right place.*** (600 italic).
+- **Smaller screens:** the type scales with the width. On phones the blocks
+  stack and the "what IEX is" paragraph is left out.
+- **The sky frame:** sits on the margins, with square corners. Its top (`--T`)
+  is measured from the words above it plus a 14 px gap, which comes to 176 px
+  at 1440 wide.
 - **Checking the grid:** add `?grid` to the address to draw the columns over
   the page.
 - **One number drives it:** `--fp` (0 framed, 1 full-bleed), set by
@@ -333,27 +340,51 @@ wrap's space (`freeze`/`thaw` in `garden.js`).
 | Late frames in 20 s | — | 0 of 1,200 |
 | Motion jitter | — | under 0.1 px a frame |
 
-## The ink
+## The office's unitmark
 
-Every line of type looks inked by hand rather than set by a screen.
+The Office for Institutional Equity and Title IX unitmark sits where the
+contact details were, bottom-left inside the sky frame.
+- **The mark:** inline SVG in `.contact`, 38 px tall (32 px on phones). It
+  replaces the old office-name line; the email and phone sit under it.
+- **Colours:** recoloured to the type's brown (`#82423D`), with the letters
+  in the square in the paper's white.
+- **No haze:** it sits straight on the sky, with no glow behind it.
 
-**On the page** (the heading, paragraph, footer, hint, buttons and the
-notebook), SVG filters (the `<svg class="ink-defs">` at the top of
-`index.html`) do three things:
-- roughen the letter edges a touch (displacement by fine noise);
-- let the ink lie unevenly (soft blotches of density);
-- drag thin, dry, mostly level scratches through it.
+## The ink and the paper
 
-There are a few versions: `ink-a/b/c` are the same ink with different seeds,
-so neighbouring rows never repeat; `ink-lg` is for headings and `ink-sm` for
-small type. The search field and the composer stay clean, so typing is never
-fuzzy.
+Quietly tactile: type that looks printed on paper, never distressed.
 
-**On the sheets** (the question, answer and foot printed on every plane),
-`setType` hand-sets each letter: a little off its line and angle and a touch
-lighter or darker, seeded so a sheet always prints the same. Then, on the
-type's own layer, the ink gets uneven density (quarter-inch blotches and a
-finer grain) and dry scratches, before it goes down on the paper.
+**The page** is a sheet of paper: a near-white, faintly warm (`#FEFDF9`) with soft
+mottling, a fine laid grain both ways, fibres and tooth. It's there when you
+look, never loud. It's a 400 px tile drawn once by a small script in
+`index.html`.
+
+**The frame's edge is deckled.** An SVG overlay (`#deckle`) fills the page
+around the sky with that same paper tile and bites 0–3 px, unevenly, into the
+frame's straight edges.
+- **The bite:** three octaves of smooth noise, seeded so it never changes,
+  softened by a 0.45 px blur.
+- **Opening:** the bite shrinks to nothing as the frame opens, so full-bleed
+  is clean.
+- **Cost:** it's only redrawn when the frame moves or the window resizes
+  (`drawDeckle` in `garden.js`).
+
+**Type on the page** (the heading, paragraph, footer, hint, buttons and the
+notebook) goes through SVG filters (the `<svg class="ink-defs">` at the top of
+`index.html`). Each one:
+- lets the ink spread a hair into the paper (a touch of blur, with the edge
+  firmed back up);
+- keeps the edge very slightly irregular;
+- lets the paper's fine tooth show through the ink by a few percent.
+
+There are a few versions: `ink-a/b/c` are the same ink with different seeds;
+`ink-lg` is for headings and `ink-sm` for small type. The search field and the
+composer stay clean.
+
+**Type on the sheets** (printed on every plane) is set by `setType`:
+- each letter sits a hair off its line and angle, like a typewriter's, seeded
+  so a sheet always prints the same;
+- the ink is a few percent uneven (a soft variation and the paper's tooth).
 
 ## The catch (hover)
 

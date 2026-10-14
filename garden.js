@@ -496,10 +496,10 @@
   }
   /* The type, set on the ruling; printed into the paper, so it is there
      from the first fold to the last. Inked by hand rather than set: each
-     letter sits a little off its line and angle (seeded, so a sheet always
-     prints the same), and on its own layer the ink lies unevenly (soft
-     blotches of density, a finer grain of it) with thin dry scratches
-     dragged through, before it goes down on the paper. */
+     letter sits a hair off its line and angle, like a typewriter's
+     (seeded, so a sheet always prints the same), and on its own layer the
+     ink is very slightly uneven (a soft variation and the paper's fine
+     tooth showing through) before it goes down on the paper. */
   function setType(c, sheet, item, ppi, seed) {
     var W = c.canvas.width, H = c.canvas.height, u = ppi;
     var pitch = RULE_PITCH * u, top = 1.05 * u;
@@ -514,10 +514,10 @@
         var ch = text[i], w = cw[ch] || (cw[ch] = t.measureText(ch).width);
         if (ch !== ' ') {
           t.save();
-          t.globalAlpha = alpha * (0.86 + 0.14 * rnd01());
-          t.translate(x + w / 2, y + (rnd01() - 0.5) * 0.05 * fs);
-          t.rotate((rnd01() - 0.5) * 2.4 * Math.PI / 180);
-          var sc = 1 + (rnd01() - 0.5) * 0.05; t.scale(sc, sc);
+          t.globalAlpha = alpha * (0.9 + 0.1 * rnd01());
+          t.translate(x + w / 2, y + (rnd01() - 0.5) * 0.03 * fs);
+          t.rotate((rnd01() - 0.5) * 1.0 * Math.PI / 180);
+          var sc = 1 + (rnd01() - 0.5) * 0.02; t.scale(sc, sc);
           t.fillText(ch, -w / 2, 0);
           t.restore();
         }
@@ -541,8 +541,8 @@
     t.font = '400 ' + (0.115 * u) + 'px "Bitter", Georgia, serif';
     inked('IEX · Office for Institutional Equity and Title IX', m, H - 0.62 * u, 0.75);
     inked('institutionalequity@cmu.edu · (412) 268-7125', m, H - 0.42 * u, 0.75);
-    /* the ink: uneven density (soft blotches about a quarter inch across,
-       then a finer grain), knocked out of the type only */
+    /* the ink: a little uneven (a soft variation, then the paper's fine
+       tooth), only ever lighter by a few percent, and only in the type */
     function density(cell, lo) {
       var nw = Math.max(2, Math.ceil(W / cell)), nh = Math.max(2, Math.ceil(H / cell));
       var nc = document.createElement('canvas'); nc.width = nw; nc.height = nh;
@@ -553,20 +553,8 @@
       t.imageSmoothingEnabled = true;
       t.drawImage(nc, 0, 0, W, H);
     }
-    density(0.25 * u, 0.62);
-    density(Math.max(1.5, 0.035 * u), 0.78);
-    /* dry scratches: thin, mostly level strokes where the ink skipped */
-    t.globalCompositeOperation = 'destination-out';
-    t.lineCap = 'round';
-    var n = Math.round(W * H / (u * u) * 4);
-    for (var sI = 0; sI < n; sI++) {
-      var sx = rnd01() * W, sy = rnd01() * H, len = (0.15 + rnd01() * 0.9) * u, ang = (rnd01() - 0.5) * 0.14;
-      t.globalAlpha = 0.5 + rnd01() * 0.45;
-      t.lineWidth = Math.max(0.6, (0.004 + rnd01() * 0.007) * u);
-      t.beginPath(); t.moveTo(sx, sy);
-      t.quadraticCurveTo(sx + Math.cos(ang) * len / 2, sy + Math.sin(ang) * len / 2 + (rnd01() - 0.5) * 0.02 * u, sx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
-      t.stroke();
-    }
+    density(0.3 * u, 0.88);
+    density(Math.max(1.5, 0.03 * u), 0.84);
     t.globalCompositeOperation = 'source-over'; t.globalAlpha = 1;
     c.drawImage(layer, 0, 0);
   }
@@ -1354,6 +1342,40 @@
     }
   }
   function openFrame() { setFrame(1); }
+  /* the deckled edge: along each side of the frame, the paper bites inward
+     0-2.5 px by a few octaves of smooth noise (seeded, so it never changes),
+     softened a hair; it shrinks to nothing as the frame opens */
+  var deckle = { path: document.getElementById('deckle-path'), img: document.getElementById('deckle-img'), key: '' };
+  if (deckle.img && window.__qfPaper) deckle.img.setAttribute('href', window.__qfPaper);
+  function noise1(x, k) {
+    var i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+    function h(n) { var v = Math.sin(n * 127.1 + k * 311.7) * 43758.5453; return v - Math.floor(v); }
+    return h(i) * (1 - u) + h(i + 1) * u;
+  }
+  function bite(s, k) {
+    var v = 0.4 * noise1(s / 46, k) + 0.33 * noise1(s / 9, k + 7) + 0.27 * noise1(s / 2.6, k + 13);
+    return Math.max(0, Math.min(1, (v - 0.25) * 1.9));           // more contrast: mostly a hair, now and then a nick
+  }
+  function drawDeckle() {
+    if (!deckle.path) return;
+    var W = window.innerWidth, H = window.innerHeight, cs = getComputedStyle(document.documentElement);
+    var T = parseFloat(cs.getPropertyValue('--T')) || 0, E = parseFloat(cs.getPropertyValue('--grid-margin')) || 0;
+    var q = 1 - FRAME.p, top = q * T, side = q * E, bot = q * E, amp = 3.2 * q;
+    var key = [W, H, top.toFixed(1), side.toFixed(1)].join(',');
+    if (key === deckle.key) return;
+    deckle.key = key;
+    if (amp < 0.05) { deckle.path.setAttribute('d', ''); return; }
+    var x0 = side, x1 = W - side, y0 = top, y1 = H - bot, st = 1.5, d = 'M-2 -2H' + (W + 2) + 'V' + (H + 2) + 'H-2Z';
+    /* the hole, counter-clockwise: top (left to right), right, bottom, left */
+    var pts = [], s0;
+    for (s0 = 0; s0 <= x1 - x0; s0 += st) pts.push([x0 + s0, y0 + amp * bite(s0, 1)]);
+    for (s0 = 0; s0 <= y1 - y0; s0 += st) pts.push([x1 - amp * bite(s0, 2), y0 + s0]);
+    for (s0 = 0; s0 <= x1 - x0; s0 += st) pts.push([x1 - s0, y1 - amp * bite(s0, 3)]);
+    for (s0 = 0; s0 <= y1 - y0; s0 += st) pts.push([x0 + amp * bite(s0, 4), y1 - s0]);
+    d += 'M' + pts.map(function (p) { return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join('L') + 'Z';
+    deckle.path.setAttribute('d', d);
+  }
+  window.addEventListener('resize', function () { deckle.key = ''; });
   function frameOpen() { return FRAME.target >= 1 && FRAME.p >= 1; }
   /* per frame: p follows its target softly (a damped lerp, 0.12 a frame at 60 fps) */
   function frameTick(dt) {
@@ -1367,6 +1389,7 @@
       document.body.classList.toggle('framed', FRAME.p < 1);
       measureTick = 0;                                   // the words moved: re-measure what planes thin behind
     }
+    if (FRAME.p !== deckle.p || !deckle.key) { deckle.p = FRAME.p; drawDeckle(); }
     if (!FRAME.bar && FRAME.p >= 0.95) showBar();
     else if (FRAME.bar && FRAME.p < 0.8) hideBar();
   }

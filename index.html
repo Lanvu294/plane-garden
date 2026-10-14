@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- the font never holds up the first paint: the words show at once (in
      Georgia for a moment if Bitter is still on its way) -->
-<link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<noscript><link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet"></noscript>
+<link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&display=swap" rel="stylesheet"></noscript>
 <link rel="preload" href="lib/three.min.js" as="script">
 <style>
   :root {
@@ -36,7 +36,9 @@
   @media (max-width: 1100px) { :root { --grid-margin: 40px; } }
   @media (max-width: 767px) { :root { --cols: 4; --grid-margin: 16px; --gutter: 12px; --T: 212px; } }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #FFFFFF; color: var(--ink);
+  /* the page is a sheet of paper: a warm off-white, with a faint tooth,
+     mottling and fibres (the tile is drawn by the script under #sky) */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #FEFDF9; color: var(--ink);
     font-family: 'Bitter', Georgia, serif; -webkit-font-smoothing: antialiased; }
   /* the sky frame: the canvas (and its grain) clipped to the inset frame.
      Behind the canvas, the same sky as CSS, for the moment before the 3D
@@ -67,17 +69,26 @@
     background: repeating-linear-gradient(to right, rgba(255, 0, 0, .1) 0 var(--col), transparent var(--col) calc(var(--col) + var(--gutter))); }
   /* the ink filters (the svg at the top of the body) on every line of type */
   .masthead h1 { filter: url(#ink-lg); }
-  .masthead p, .mast-mini, .peek-q { filter: url(#ink-a); }
+  .masthead .mh-lede, .mast-mini, .peek-q { filter: url(#ink-a); }
+  .masthead .mh-about, .masthead .mh-close { filter: url(#ink-sm); }
   .contact, .hint, .loading, .peek-cue, .reader button span { filter: url(#ink-sm); }
+  #deckle { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1; overflow: visible; }
   #stage.dragging { cursor: grabbing; }
   #stage.over { cursor: pointer; }
 
-  /* the heading and its paragraph, on the white above the frame: on the
-     grid's left margin, the paragraph seven columns wide. As the frame opens
-     they slide up by the band's height and fade out (by --fp 0.6). */
-  .masthead { position: fixed; left: var(--grid-margin); top: 46px; width: calc(7 * var(--col) + 6 * var(--gutter));
+  /* the words on the white above the frame, on the 12-column grid: the
+     lede and the big "Dear IEX, I want to know ___" over columns 1-6, what
+     IEX is over 7-9, and the closing line over 10-12, all hanging from the
+     same top. As the frame opens they slide up by the band's height and
+     fade out (by --fp 0.6). The band (--T) is measured from them. */
+  .masthead { position: fixed; left: var(--grid-margin); right: var(--grid-margin); top: 48px;
+    display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); column-gap: var(--gutter); align-items: start;
     transform: translateY(calc(var(--fp) * -1 * var(--T))); opacity: clamp(0, calc(1 - var(--fp) / 0.6), 1);
     pointer-events: none; text-align: left; color: var(--ink-head); z-index: 2; }
+  .mh-main { grid-column: 1 / span 6; }
+  .mh-about { grid-column: 7 / span 3; }
+  .mh-close { grid-column: 10 / span 3; }
+  .masthead .loading { grid-column: 1 / span 6; }
   body.qf-frame-jump .masthead { transition: opacity .2s; }
   /* at full-bleed, a compact title in the frame's top-left, level with the buttons */
   .mast-mini { position: fixed; left: calc(var(--side) + var(--pad)); top: calc(var(--top) + var(--pad)); height: 38px;
@@ -88,9 +99,14 @@
   .mast-mini::before { content: ''; position: absolute; left: -110px; top: -70px; right: -120px; bottom: -70px; z-index: -1;
     background: radial-gradient(ellipse 50% 50% at 45% 50%, rgba(178, 202, 233, .7) 0%, rgba(178, 202, 233, .45) 45%,
       rgba(178, 202, 233, 0) 100%); pointer-events: none; }
-  .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 400; font-size: 38px;
-    line-height: 48px; margin: 0 0 1px; letter-spacing: -0.005em; text-wrap: balance; }
-  .masthead p { margin: 0; max-width: 35em; font-size: 20px; line-height: 28px; }
+  .masthead .mh-lede { margin: 0; max-width: 28em; font-size: clamp(16px, 1.56vw, 22.5px); line-height: 1.22; }
+  .masthead h1 { font-family: 'Bitter', Georgia, serif; font-weight: 400; font-size: clamp(30px, 3.05vw, 44px);
+    line-height: 1.15; margin: 6px 0 0; letter-spacing: -0.008em; }
+  /* the blank to fill in: a run of underscores to the eye, "…" to a screen reader */
+  .masthead h1 .blank { letter-spacing: -0.02em; }
+  .masthead h1 .keep { white-space: nowrap; }
+  .masthead .mh-about, .masthead .mh-close { margin: 0; font-size: clamp(12.5px, .975vw, 14px); line-height: 1.35; text-wrap: pretty; }
+  .masthead .mh-close strong { font-weight: 600; font-style: italic; }
 
   /* The words don't wait for the sky: the title comes in at 0.2 s and the
      subtitle lines just after, each fading up from 8 px lower, all done by
@@ -101,10 +117,12 @@
   @keyframes qf-in { from { opacity: 0; transform: translateY(8px); } }
   @keyframes qf-fade { from { opacity: 0; } }
   .masthead h1 { animation: qf-in .5s cubic-bezier(.22, .61, .36, 1) .2s backwards; }
-  .masthead p { animation: qf-in .45s cubic-bezier(.22, .61, .36, 1) .3s backwards; }
+  .masthead .mh-lede { animation: qf-in .45s cubic-bezier(.22, .61, .36, 1) .1s backwards; }
+  .masthead .mh-about { animation: qf-in .45s cubic-bezier(.22, .61, .36, 1) .35s backwards; }
+  .masthead .mh-close { animation: qf-in .45s cubic-bezier(.22, .61, .36, 1) .45s backwards; }
   .contact { transition: opacity .4s; }
   @media (prefers-reduced-motion: reduce) {
-    .masthead h1, .masthead p { animation: qf-fade .6s ease-out backwards; }
+    .masthead h1, .masthead .mh-lede, .masthead .mh-about, .masthead .mh-close { animation: qf-fade .6s ease-out backwards; }
   }
   /* once you've unfolded something or opened the panel, the subtitle has done its job */
 
@@ -124,6 +142,11 @@
     background: radial-gradient(ellipse 50% 50% at 50% 55%, rgba(234, 134, 100, .78) 0%, rgba(234, 134, 100, .78) 52%,
       rgba(234, 134, 100, .32) 78%, rgba(234, 134, 100, 0) 100%); }
   .contact a { color: inherit; }
+  /* no haze behind the unitmark: it sits straight on the sky */
+  .contact::before { display: none; }
+  /* the office's unitmark, in the type's brown (its letters in the paper's white) */
+  .contact .iex-logo { display: block; height: 38px; width: auto; color: var(--ink-head); margin: 0 0 8px; }
+  @media (max-width: 640px) { .contact .iex-logo { height: 32px; } }
 
   /* the sky waits for its planes quietly; if they take a while, one small
      line under the subtitle — no numbers */
@@ -170,9 +193,12 @@
   .focus-ring.on { opacity: .6; }
 
   @media (max-width: 640px) {
-    .masthead { top: 26px; width: calc(100vw - 2 * var(--grid-margin)); }
-    .masthead h1 { font-size: 27px; line-height: 34px; margin-bottom: 6px; }
-    .masthead p { font-size: 15.5px; line-height: 22px; }
+    .masthead { top: 24px; row-gap: 12px; }
+    .mh-main, .mh-close { grid-column: 1 / -1; }
+    .mh-about { display: none; }
+    .masthead .mh-lede { font-size: 15px; }
+    .masthead h1 { font-size: 28px; margin-top: 6px; }
+    .masthead .mh-close { font-size: 13px; }
     .mast-mini { font-size: 15px; }
     .hint { display: none; }
   }
@@ -180,61 +206,55 @@
 <link rel="stylesheet" href="panel.css">
 </head>
 <body>
-<!-- the ink: every line of type looks inked by hand rather than set by a screen.
-     Each filter roughens the letter edges a touch (displacement by fine noise), lets the
-     ink lie unevenly (soft blotches of density) and drags thin dry scratches through it.
-     a/b/c are the same ink with different seeds, so neighbouring lines never repeat;
-     lg for the heading, sm for small type. -->
+<!-- the ink: type printed on paper, quietly. Each filter lets the ink spread a hair
+     into the paper (a touch of blur, then the edge firmed back up), keeps the edge
+     very slightly irregular, and lets a fine tooth of the paper show through the ink.
+     a/b/c are the same ink with different seeds; lg for the heading, sm for small type. -->
 <svg class="ink-defs" width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
-  <filter id="ink-a" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
-    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3" result="edge"/>
-    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.1" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
-    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="7" result="blot"/>
-    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.42" result="density"/>
-    <feTurbulence type="turbulence" baseFrequency="0.012 0.8" numOctaves="1" seed="12" result="streak"/>
-    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -7 0 0 0 4.1" result="scratch"/>
-    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
-    <feComposite in="ragged" in2="mask" operator="in"/>
+  <filter id="ink-a" x="-2%" y="-12%" width="104%" height="124%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="3" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.6" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feGaussianBlur in="rough" stdDeviation="0.3" result="soft"/>
+    <feComponentTransfer in="soft" result="spread"><feFuncA type="linear" slope="1.3"/></feComponentTransfer>
+    <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" seed="8" result="fibre"/>
+    <feColorMatrix in="fibre" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.45 0 0 0 0.72" result="tooth"/>
+    <feComposite in="spread" in2="tooth" operator="in"/>
   </filter>
-  <filter id="ink-b" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
-    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="21" result="edge"/>
-    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.1" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
-    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="25" result="blot"/>
-    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.42" result="density"/>
-    <feTurbulence type="turbulence" baseFrequency="0.012 0.8" numOctaves="1" seed="30" result="streak"/>
-    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -7 0 0 0 4.1" result="scratch"/>
-    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
-    <feComposite in="ragged" in2="mask" operator="in"/>
+  <filter id="ink-b" x="-2%" y="-12%" width="104%" height="124%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="21" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.6" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feGaussianBlur in="rough" stdDeviation="0.3" result="soft"/>
+    <feComponentTransfer in="soft" result="spread"><feFuncA type="linear" slope="1.3"/></feComponentTransfer>
+    <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" seed="26" result="fibre"/>
+    <feColorMatrix in="fibre" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.45 0 0 0 0.72" result="tooth"/>
+    <feComposite in="spread" in2="tooth" operator="in"/>
   </filter>
-  <filter id="ink-c" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
-    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="37" result="edge"/>
-    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.1" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
-    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="41" result="blot"/>
-    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.42" result="density"/>
-    <feTurbulence type="turbulence" baseFrequency="0.012 0.8" numOctaves="1" seed="46" result="streak"/>
-    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -7 0 0 0 4.1" result="scratch"/>
-    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
-    <feComposite in="ragged" in2="mask" operator="in"/>
+  <filter id="ink-c" x="-2%" y="-12%" width="104%" height="124%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="37" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.6" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feGaussianBlur in="rough" stdDeviation="0.3" result="soft"/>
+    <feComponentTransfer in="soft" result="spread"><feFuncA type="linear" slope="1.3"/></feComponentTransfer>
+    <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" seed="42" result="fibre"/>
+    <feColorMatrix in="fibre" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.45 0 0 0 0.72" result="tooth"/>
+    <feComposite in="spread" in2="tooth" operator="in"/>
   </filter>
-  <filter id="ink-lg" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
-    <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="2" seed="5" result="edge"/>
-    <feDisplacementMap in="SourceGraphic" in2="edge" scale="1.8" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
-    <feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="3" seed="9" result="blot"/>
-    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0.52" result="density"/>
-    <feTurbulence type="turbulence" baseFrequency="0.007 0.45" numOctaves="1" seed="14" result="streak"/>
-    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -6.5 0 0 0 3.9" result="scratch"/>
-    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
-    <feComposite in="ragged" in2="mask" operator="in"/>
+  <filter id="ink-lg" x="-2%" y="-12%" width="104%" height="124%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="5" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.9" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feGaussianBlur in="rough" stdDeviation="0.4" result="soft"/>
+    <feComponentTransfer in="soft" result="spread"><feFuncA type="linear" slope="1.35"/></feComponentTransfer>
+    <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="2" seed="10" result="fibre"/>
+    <feColorMatrix in="fibre" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.5 0 0 0 0.7" result="tooth"/>
+    <feComposite in="spread" in2="tooth" operator="in"/>
   </filter>
-  <filter id="ink-sm" x="-3%" y="-20%" width="106%" height="140%" color-interpolation-filters="sRGB">
-    <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" seed="13" result="edge"/>
-    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.7" xChannelSelector="R" yChannelSelector="G" result="ragged"/>
-    <feTurbulence type="fractalNoise" baseFrequency="0.13" numOctaves="3" seed="17" result="blot"/>
-    <feColorMatrix in="blot" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.8 0 0 0 0.5" result="density"/>
-    <feTurbulence type="turbulence" baseFrequency="0.016 1.1" numOctaves="1" seed="22" result="streak"/>
-    <feColorMatrix in="streak" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -8 0 0 0 4.8" result="scratch"/>
-    <feComposite in="density" in2="scratch" operator="in" result="mask"/>
-    <feComposite in="ragged" in2="mask" operator="in"/>
+  <filter id="ink-sm" x="-2%" y="-12%" width="104%" height="124%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.4" numOctaves="2" seed="13" result="edge"/>
+    <feDisplacementMap in="SourceGraphic" in2="edge" scale="0.4" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feGaussianBlur in="rough" stdDeviation="0.22" result="soft"/>
+    <feComponentTransfer in="soft" result="spread"><feFuncA type="linear" slope="1.2"/></feComponentTransfer>
+    <feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="18" result="fibre"/>
+    <feColorMatrix in="fibre" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.35 0 0 0 0.78" result="tooth"/>
+    <feComposite in="spread" in2="tooth" operator="in"/>
   </filter>
 </svg>
 <div id="sky">
@@ -242,19 +262,50 @@
   <div class="grain-top" aria-hidden="true"></div>
   <div class="paper-top" aria-hidden="true"></div>
   <!-- the words that live in the sky ride inside its frame (so the frame clips their haze too) -->
-  <p class="mast-mini" aria-hidden="true">Helping you land in the right place.</p>
-  <div class="contact">IEX · Office for Institutional Equity and Title IX<br>
-  <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
+  <p class="mast-mini" aria-hidden="true">Dear IEX, I want to know ______</p>
+  <div class="contact"><svg class="iex-logo" viewBox="0 0 190.01 54" role="img" aria-label="Carnegie Mellon University, Office for Institutional Equity and Title IX" fill="currentColor"><polygon points="54 54 0 54 0 0 54 0 54 54 54 54"/> <g> <polygon fill="#FEFDF9" points="39.85 20.37 39.85 16.11 37.88 16.11 37.88 16.41 38.43 16.41 38.43 20.37 37.72 20.37 37.72 20.65 40.56 20.65 40.56 20.37 39.85 20.37 39.85 20.37"/> <path fill="#FEFDF9" d="M11.82,13.36h-.26c-.01.22-.13.31-.34.31-.44,0-1.08-.53-1.83-.53-2.14,0-3.43,2.11-3.43,3.96s1.23,3.71,3.3,3.71c1.25,0,1.72-.59,2.05-.59.22,0,.26.19.26.43h.28v-2.56h-.28l-.06.35c-.15.84-.8,2.09-2.15,2.09-1.19,0-1.65-1.03-1.65-3.56,0-2.66.63-3.55,1.68-3.55,1.19,0,2.01,1.33,2.17,2.4h.26v-2.46h0Z"/> <path fill="#FEFDF9" d="M17.35,19.76c0,.27-.18.58-.29.58-.19,0-.23-.2-.23-.51v-2.37c0-1.17-1.1-1.46-2.16-1.46s-1.78.5-1.78,1.08c0,.36.21.67.67.67.39,0,.63-.26.63-.62,0-.52-.54-.53-.54-.54,0-.23.6-.31.96-.31.77,0,.87.28.87.9v.86l-1.01.08c-.94.07-1.95.32-1.95,1.39,0,.9.8,1.26,1.59,1.26.4,0,1.11-.15,1.38-.65.19.43.57.65,1.03.65.67,0,1.1-.4,1.1-1.01h-.26ZM15.48,19.42c-.02.55-.33.99-.81.99-.7,0-.73-.59-.73-1.04,0-.55.06-.91.73-.98l.81-.08v1.11h0Z"/> <polygon fill="#FEFDF9" points="40.95 38.05 40.95 33.79 38.82 33.79 38.82 34.09 39.53 34.09 39.53 38.05 38.82 38.05 38.82 38.33 41.66 38.33 41.66 38.05 40.95 38.05 40.95 38.05"/> <path fill="#FEFDF9" d="M14.25,22.64v-.29s-2.34,0-2.34,0l-1.7,4.88-1.66-4.88h-2.58v.3h.7v5.87c0,.44-.11.79-.7.79v.28h1.78v-.28h-.03c-.56,0-.77-.04-.77-.88v-5.83h.02l2.46,7h.28l2.4-6.87h.02v6.59h-.69v.28h2.82v-.28h-.67v-6.66h.67Z"/> <path fill="#FEFDF9" d="M15.89,27.1h2.84c-.01-1.11-1.04-2.18-2.12-2.16-1.21,0-2.26,1.05-2.26,2.44s.98,2.33,2.29,2.33,1.89-.78,2.12-1.8h-.28c-.23.96-.73,1.5-1.53,1.5-.96,0-1.06-.75-1.06-1.45v-.86h0ZM15.89,26.82v-.69c0-.69.3-.91.65-.91.49,0,.65.34.65.91v.69h-1.3Z"/> <path fill="#FEFDF9" d="M27.71,35.84h2.84c-.01-1.11-1.04-2.18-2.12-2.16-1.21,0-2.26,1.05-2.26,2.44s.98,2.33,2.29,2.33,1.89-.78,2.12-1.8h-.28c-.23.96-.73,1.5-1.53,1.5-.96,0-1.06-.75-1.06-1.45v-.86h0ZM27.71,35.56v-.69c0-.69.3-.91.65-.91.49,0,.65.34.65.91v.69h-1.3Z"/> <polygon fill="#FEFDF9" points="18.75 22.36 18.75 22.62 19.46 22.62 19.46 29.3 18.75 29.3 18.75 29.59 21.59 29.59 21.59 29.3 20.88 29.3 20.88 22.36 18.75 22.36 18.75 22.36"/> <polygon fill="#FEFDF9" points="21.78 22.36 21.78 22.62 22.49 22.62 22.49 29.3 21.78 29.3 21.78 29.59 24.62 29.59 24.62 29.3 23.91 29.3 23.91 22.36 21.78 22.36 21.78 22.36"/> <path fill="#FEFDF9" d="M29.49,27.33c0-1.41-1.09-2.39-2.45-2.39s-2.45.98-2.45,2.39,1.09,2.39,2.45,2.39,2.45-.98,2.45-2.39M27.89,28.34c0,.77-.32,1.09-.84,1.09s-.84-.32-.84-1.09v-2.02c0-.77.32-1.09.84-1.09s.84.32.84,1.09v2.02h0Z"/> <path fill="#FEFDF9" d="M5.96,31.36h.72v4.57c0,1.59,1.1,2.56,2.78,2.56,1.89,0,2.72-1,2.72-2.51v-3.91c0-.6.16-.71.53-.71h.21v-.28h-1.81v.28h.13c.52,0,.6.16.6.76v3.97c0,1.4-.87,2.04-1.75,2.04-1.5,0-1.8-1.01-1.89-2.33v-4.44h.67v-.28h-2.91v.28h0Z"/> <path fill="#FEFDF9" d="M23.78,38.45h.28l1.52-3.6c.31-.67.47-.76.71-.77h.09v-.28h-1.61v.28h.2c.3,0,.43-.02.43.25,0,.16-.05.33-.17.62l-.7,1.65-1.12-2.52h.57v-.28h-2.58v.28h.48l1.89,4.37h0Z"/> <path fill="#FEFDF9" d="M35.24,38.45h.24c.05-.16.16-.25.36-.25.27,0,.59.25,1.16.25.98,0,1.65-.84,1.65-1.69,0-1.26-.86-1.35-1.96-1.5-.58-.08-.9-.16-.9-.62,0-.48.42-.69.98-.69.77,0,1.07.51,1.33,1.18h.24v-1.46h-.23c0,.12-.11.23-.3.23-.33,0-.6-.23-1.07-.23-1.03,0-1.53.87-1.53,1.53,0,1.33,1.01,1.44,1.79,1.53.74.09,1.01.14,1.01.61,0,.55-.45.79-1.01.79-.78,0-1.32-.68-1.5-1.43h-.24v1.73h0Z"/> <polygon fill="#FEFDF9" points="21.03 38.05 21.03 33.79 18.9 33.79 18.9 34.09 19.61 34.09 19.61 38.05 18.9 38.05 18.9 38.33 21.74 38.33 21.74 38.05 21.03 38.05 21.03 38.05"/> <path fill="#FEFDF9" d="M19.61,32.37c0,.39.32.71.71.71s.71-.31.71-.71-.31-.71-.71-.71-.71.32-.71.71"/> <path fill="#FEFDF9" d="M39.53,32.37c0,.39.31.71.71.71s.71-.31.71-.71-.32-.71-.71-.71-.71.32-.71.71"/> <path fill="#FEFDF9" d="M29.73,18.16h2.84c-.01-1.11-1.04-2.18-2.12-2.16-1.21,0-2.26,1.05-2.26,2.44s.98,2.33,2.29,2.33,1.89-.78,2.12-1.8h-.28c-.23.96-.73,1.5-1.53,1.5-.96,0-1.06-.75-1.06-1.45v-.86h0ZM29.73,17.88v-.69c0-.69.3-.9.65-.9.49,0,.65.34.65.9v.69h-1.3Z"/> <path fill="#FEFDF9" d="M42.15,18.16h2.84c-.01-1.11-1.04-2.18-2.12-2.16-1.21,0-2.26,1.05-2.26,2.44s.98,2.33,2.29,2.33,1.89-.78,2.12-1.8h-.28c-.23.96-.73,1.5-1.53,1.5-.96,0-1.06-.75-1.06-1.45v-.86h0ZM42.15,17.88v-.69c0-.69.3-.9.65-.9.37,0,.65.21.65.9v.69h-1.3Z"/> <path fill="#FEFDF9" d="M17.99,38.05v-2.78c0-1.11-.47-1.63-1.45-1.63-.69,0-1.39.4-1.67.99h0v-.83h-2.13v.28h.71v3.97h-.71v.28h2.74v-.28h-.61v-2.71c.09-.38.57-1.26,1.13-1.26.37,0,.56.13.56.82v3.16h-.59v.28h2.72v-.28h-.71Z"/> <path fill="#FEFDF9" d="M34.74,29.31v-2.78c0-1.11-.47-1.63-1.45-1.63-.69,0-1.39.4-1.67.99h0v-.83h-2.13v.28h.71v3.97h-.71v.28h2.74v-.28h-.61v-2.71c.09-.38.57-1.26,1.13-1.26.37,0,.56.13.56.82v3.16h-.59v.28h2.72v-.28h-.71Z"/> <path fill="#FEFDF9" d="M27.47,20.37v-2.78c0-1.11-.47-1.63-1.45-1.63-.69,0-1.39.4-1.67.99h0v-.83h-2.13v.28h.71v3.97h-.71v.28h2.74v-.28h-.61v-2.71c.09-.38.57-1.26,1.13-1.26.37,0,.56.13.56.82v3.16h-.59v.28h2.72v-.28h-.71Z"/> <path fill="#FEFDF9" d="M38.43,14.7c0,.39.32.71.71.71s.71-.32.71-.71-.31-.71-.71-.71-.71.32-.71.71"/> <path fill="#FEFDF9" d="M47.86,33.79v.3c.44,0,.63.04.63.24,0,.16-.05.33-.17.62l-.7,1.65-1.12-2.51h.58v-.3h-3.55v-2.21h-.19c0,1.09-.74,2.21-1.78,2.21v.29h.55v3.18c0,.98.84,1.17,1.13,1.17.63,0,1.05-.26,1.37-.79l-.22-.12c-.12.18-.29.43-.54.43-.21,0-.31-.15-.31-.49v-3.39h1.43l1.88,4.33-.65,1.53h0s0,0,0,0h0s-.04.05-.08.05c-.04,0-.07-.02-.08-.06,0,0,0,0,0,0-.08-.3-.35-.52-.68-.52-.39,0-.71.32-.71.71,0,.28.16.51.39.63,0,0,0,0,0,0,0,0,.01,0,.02.01.01,0,.03.01.04.02.08.03.17.05.26.05.6.05.9-.39,1.11-.84.05-.1.09-.2.13-.3.09-.22.25-.59.43-1.03h0l.18-.42h0l1.45-3.42c.31-.67.43-.76.8-.76h0v-.3h-1.61Z"/> <path fill="#FEFDF9" d="M21.18,15.95c-.66,0-1.16.45-1.36.97h-.02v-.78h-2.11v.29h.71v3.96h-.71v.28h3.08v-.28h-.95v-2.22c0-.66.17-1.34.61-1.71.03-.02.06-.02.09,0,.03.02.05.05.05.09h0c-.03.08-.05.18-.06.29-.01.37.3.67.7.67.49,0,.78-.36.78-.75,0-.49-.33-.79-.81-.79h0Z"/> <path fill="#FEFDF9" d="M35.48,17.5c0,1.2-.28,1.24-.65,1.24-.41,0-.63-.08-.63-1.27,0-.83.09-1.19.63-1.19.48,0,.64.03.65,1.21h0ZM35.3,21.02c1.03,0,1.3.04,1.3.67,0,.75-.92,1.44-1.96,1.44-.93,0-1.37-.57-1.39-1.06,0-.45.22-.75.5-1.05h1.54ZM36.67,16.29s.05-.02.06,0c.01.02.01.04,0,.06h0c-.06.11-.09.24-.04.38.05.14.17.25.31.28.29.07.55-.15.55-.43,0-.18-.11-.32-.24-.4-.13-.08-.29-.12-.45-.12-.27,0-.55.15-.76.32,0,0,0,0,0,0-.05-.03-.1-.06-.15-.1-.28-.16-.65-.27-1.14-.27-.86,0-1.79.57-1.79,1.5,0,.57.31,1.01.85,1.26v.02c-.4.05-1.03.33-1.03,1.18,0,.51.24.91.67,1.03v.02c-.41.11-.89.52-.89,1.02,0,.76.9,1.35,2.04,1.35,1.43,0,2.37-.97,2.37-2.22,0-1-.49-1.45-1.5-1.43h-1.71c-.26,0-.43-.01-.43-.29,0-.26.39-.53.79-.53.07,0,.18.05.21.06.12.04.26.06.42.06.88,0,1.83-.5,1.83-1.48,0-.3-.13-.72-.38-.97-.01-.02-.01-.04,0-.05.1-.08.21-.15.27-.18.04-.02.08-.04.12-.06h0Z"/> <path fill="#FEFDF9" d="M34.15,33.61c-.66,0-1.16.45-1.36.97h-.02v-.78h-2.11v.29h.71v3.96h-.71v.28h3.08v-.28h-.95v-2.22c0-.66.17-1.34.61-1.71.03-.02.06-.02.09,0,.03.02.05.05.05.09h0c-.03.08-.05.18-.05.29-.01.37.3.67.7.67.49,0,.78-.36.78-.75,0-.49-.33-.79-.81-.79h0Z"/> </g> <g> <path d="M74.33,18.87c0,1.43-.36,2.55-1.08,3.37-.72.82-1.73,1.23-3.01,1.23s-2.33-.4-3.04-1.21c-.71-.8-1.07-1.94-1.07-3.4s.36-2.58,1.07-3.38c.72-.8,1.73-1.2,3.05-1.2s2.28.41,3,1.22c.72.81,1.08,1.94,1.08,3.37ZM67.22,18.87c0,1.21.26,2.12.77,2.75.51.62,1.26.94,2.24.94s1.74-.31,2.24-.93c.5-.62.76-1.54.76-2.75s-.25-2.11-.75-2.73-1.25-.93-2.23-.93-1.74.31-2.25.94c-.52.62-.77,1.53-.77,2.73Z"/> <path d="M79.19,17.44h-1.7v5.9h-1.01v-5.9h-1.2v-.46l1.2-.37v-.37c0-1.64.72-2.47,2.15-2.47.35,0,.77.07,1.25.21l-.26.81c-.39-.13-.72-.19-1-.19-.38,0-.67.13-.85.38-.18.25-.27.66-.27,1.22v.43h1.7v.79ZM83.39,17.44h-1.7v5.9h-1.01v-5.9h-1.2v-.46l1.2-.37v-.37c0-1.64.72-2.47,2.15-2.47.35,0,.77.07,1.25.21l-.26.81c-.39-.13-.72-.19-1-.19-.38,0-.67.13-.85.38-.18.25-.27.66-.27,1.22v.43h1.7v.79ZM84.56,14.84c0-.23.06-.4.17-.51.11-.11.26-.16.43-.16s.3.05.42.17.18.28.18.51-.06.4-.18.51c-.12.11-.26.17-.42.17s-.31-.06-.43-.17c-.11-.11-.17-.28-.17-.51ZM85.66,23.34h-1.01v-6.69h1.01v6.69Z"/> <path d="M90.37,23.46c-.97,0-1.72-.3-2.25-.89-.53-.6-.8-1.44-.8-2.53s.27-1.98.81-2.59c.54-.61,1.31-.92,2.3-.92.32,0,.64.03.96.1.32.07.57.15.76.24l-.31.86c-.22-.09-.47-.16-.73-.22-.26-.06-.5-.09-.7-.09-1.36,0-2.04.87-2.04,2.6,0,.82.17,1.45.5,1.89s.82.66,1.47.66c.56,0,1.13-.12,1.72-.36v.9c-.45.23-1.01.35-1.69.35Z"/> <path d="M96.16,23.46c-.99,0-1.77-.3-2.34-.9-.57-.6-.86-1.44-.86-2.51s.27-1.93.8-2.57c.53-.63,1.24-.95,2.14-.95.84,0,1.5.28,1.99.83s.73,1.28.73,2.18v.64h-4.61c.02.79.22,1.38.59,1.79.38.41.91.61,1.59.61.72,0,1.43-.15,2.14-.45v.9c-.36.16-.7.27-1.02.33s-.71.1-1.16.1ZM95.89,17.38c-.54,0-.97.17-1.28.52-.32.35-.51.83-.56,1.45h3.5c0-.64-.14-1.13-.43-1.47s-.69-.51-1.22-.51Z"/> <path d="M106.3,17.44h-1.7v5.9h-1.01v-5.9h-1.2v-.46l1.2-.37v-.37c0-1.64.72-2.47,2.15-2.47.35,0,.77.07,1.25.21l-.26.81c-.39-.13-.72-.19-1-.19-.38,0-.67.13-.85.38-.18.25-.27.66-.27,1.22v.43h1.7v.79Z"/> <path d="M113.16,19.99c0,1.09-.27,1.94-.82,2.55-.55.61-1.31.92-2.28.92-.6,0-1.13-.14-1.59-.42-.46-.28-.82-.68-1.07-1.21-.25-.52-.38-1.14-.38-1.84,0-1.09.27-1.94.82-2.55.55-.61,1.3-.91,2.27-.91s1.68.31,2.23.93c.55.62.83,1.46.83,2.53ZM108.06,19.99c0,.85.17,1.5.51,1.95.34.45.84.67,1.51.67s1.17-.22,1.51-.67c.34-.45.52-1.1.52-1.96s-.17-1.5-.52-1.94c-.34-.44-.85-.66-1.52-.66s-1.16.22-1.5.65-.51,1.08-.51,1.95Z"/> <path d="M117.98,16.53c.3,0,.56.02.8.07l-.14.94c-.28-.06-.52-.09-.73-.09-.54,0-1,.22-1.39.66-.38.44-.58.99-.58,1.64v3.59h-1.01v-6.69h.84l.12,1.24h.05c.25-.44.55-.77.9-1.01.35-.24.73-.35,1.15-.35Z"/> <path d="M123,23.34v-8.92h1.04v8.92h-1.04Z"/> <path d="M130.78,23.34v-4.33c0-.55-.12-.95-.37-1.22-.25-.27-.64-.4-1.17-.4-.7,0-1.21.19-1.54.57-.33.38-.49,1-.49,1.87v3.51h-1.01v-6.69h.82l.16.92h.05c.21-.33.5-.58.87-.77.37-.18.79-.27,1.25-.27.81,0,1.41.19,1.82.58s.61,1.01.61,1.86v4.36h-1.01Z"/> <path d="M138.19,21.52c0,.62-.23,1.1-.7,1.44s-1.11.51-1.95.51c-.89,0-1.58-.14-2.08-.42v-.94c.32.16.67.29,1.03.38s.72.14,1.06.14c.53,0,.94-.08,1.22-.25.29-.17.43-.43.43-.77,0-.26-.11-.48-.34-.67-.23-.18-.67-.4-1.32-.66-.62-.23-1.07-.43-1.33-.61-.26-.17-.46-.37-.59-.59-.13-.22-.19-.48-.19-.79,0-.54.22-.98.67-1.29.44-.31,1.05-.47,1.82-.47.72,0,1.42.15,2.11.44l-.36.82c-.67-.28-1.28-.42-1.82-.42-.48,0-.84.08-1.09.23s-.37.36-.37.62c0,.18.05.33.14.46.09.13.24.25.44.36.2.11.59.28,1.17.49.79.29,1.33.58,1.61.87s.42.66.42,1.1Z"/> <path d="M142,22.63c.18,0,.35-.01.52-.04.17-.03.3-.05.4-.08v.78c-.11.05-.27.1-.49.13-.21.03-.41.05-.58.05-1.29,0-1.94-.68-1.94-2.04v-3.98h-.96v-.49l.96-.42.43-1.43h.59v1.55h1.94v.79h-1.94v3.94c0,.4.1.71.29.93.19.21.45.32.79.32Z"/> <path d="M144.17,14.84c0-.23.06-.4.17-.51s.26-.16.43-.16.3.05.42.17c.12.11.18.28.18.51s-.06.4-.18.51c-.12.11-.26.17-.42.17-.17,0-.31-.06-.43-.17-.11-.11-.17-.28-.17-.51ZM145.27,23.34h-1.01v-6.69h1.01v6.69Z"/> <path d="M149.57,22.63c.18,0,.35-.01.52-.04.17-.03.3-.05.4-.08v.78c-.11.05-.27.1-.49.13-.21.03-.41.05-.58.05-1.29,0-1.94-.68-1.94-2.04v-3.98h-.96v-.49l.96-.42.43-1.43h.59v1.55h1.94v.79h-1.94v3.94c0,.4.1.71.29.93.19.21.45.32.79.32Z"/> <path d="M152.78,16.65v4.34c0,.54.12.95.37,1.22.25.27.64.4,1.17.4.7,0,1.21-.19,1.54-.57.32-.38.49-1.01.49-1.87v-3.52h1.01v6.69h-.84l-.15-.9h-.05c-.21.33-.5.58-.86.76-.37.17-.79.26-1.26.26-.81,0-1.42-.19-1.83-.58-.41-.39-.61-1-.61-1.86v-4.38h1.03Z"/> <path d="M161.66,22.63c.18,0,.35-.01.52-.04.17-.03.3-.05.4-.08v.78c-.11.05-.27.1-.49.13-.21.03-.41.05-.58.05-1.29,0-1.94-.68-1.94-2.04v-3.98h-.96v-.49l.96-.42.43-1.43h.59v1.55h1.94v.79h-1.94v3.94c0,.4.1.71.29.93.19.21.45.32.79.32Z"/> <path d="M163.83,14.84c0-.23.06-.4.17-.51s.26-.16.43-.16.3.05.42.17c.12.11.18.28.18.51s-.06.4-.18.51c-.12.11-.26.17-.42.17-.17,0-.31-.06-.43-.17-.11-.11-.17-.28-.17-.51ZM164.92,23.34h-1.01v-6.69h1.01v6.69Z"/> <path d="M172.72,19.99c0,1.09-.27,1.94-.82,2.55-.55.61-1.31.92-2.28.92-.6,0-1.13-.14-1.59-.42-.46-.28-.82-.68-1.07-1.21-.25-.52-.38-1.14-.38-1.84,0-1.09.27-1.94.82-2.55.55-.61,1.3-.91,2.27-.91s1.68.31,2.23.93c.55.62.83,1.46.83,2.53ZM167.63,19.99c0,.85.17,1.5.51,1.95.34.45.84.67,1.51.67s1.17-.22,1.51-.67c.34-.45.52-1.1.52-1.96s-.17-1.5-.52-1.94c-.34-.44-.85-.66-1.52-.66s-1.16.22-1.5.65-.51,1.08-.51,1.95Z"/> <path d="M178.95,23.34v-4.33c0-.55-.12-.95-.37-1.22-.25-.27-.64-.4-1.17-.4-.7,0-1.21.19-1.54.57-.33.38-.49,1-.49,1.87v3.51h-1.01v-6.69h.82l.16.92h.05c.21-.33.5-.58.87-.77.37-.18.79-.27,1.25-.27.81,0,1.41.19,1.82.58s.61,1.01.61,1.86v4.36h-1.01Z"/> <path d="M186.16,23.34l-.2-.95h-.05c-.33.42-.67.7-1,.85-.33.15-.75.22-1.24.22-.66,0-1.18-.17-1.56-.51s-.56-.83-.56-1.46c0-1.35,1.08-2.06,3.24-2.12l1.14-.04v-.42c0-.53-.11-.91-.34-1.16-.23-.25-.59-.38-1.08-.38-.56,0-1.19.17-1.89.51l-.31-.78c.33-.18.69-.32,1.08-.42s.79-.15,1.18-.15c.8,0,1.39.18,1.77.53.38.35.58.92.58,1.7v4.57h-.75ZM183.87,22.63c.63,0,1.13-.17,1.49-.52.36-.35.54-.83.54-1.45v-.6l-1.01.04c-.81.03-1.39.15-1.74.38-.36.22-.53.57-.53,1.04,0,.37.11.64.33.84s.53.29.93.29Z"/> <path d="M190.01,23.34h-1.01v-9.5h1.01v9.5Z"/> <path d="M71.56,37.84h-4.97v-8.92h4.97v.92h-3.94v2.88h3.7v.92h-3.7v3.28h3.94v.93Z"/> <path d="M75.45,37.96c-.86,0-1.54-.3-2.02-.91s-.73-1.45-.73-2.54.24-1.95.73-2.56,1.17-.92,2.04-.92c.92,0,1.62.35,2.11,1.04h.05l.15-.92h.8v9.69h-1.01v-2.86c0-.41.02-.75.07-1.04h-.08c-.47.68-1.17,1.02-2.11,1.02ZM75.6,37.11c.68,0,1.17-.18,1.48-.54s.47-.97.49-1.83v-.23c0-.94-.16-1.61-.48-2.02s-.82-.62-1.51-.62c-.59,0-1.05.23-1.36.69s-.47,1.11-.47,1.96.16,1.48.47,1.93c.31.44.77.66,1.38.66Z"/> <path d="M81.56,31.15v4.34c0,.54.12.95.37,1.22.25.27.64.4,1.17.4.7,0,1.21-.19,1.54-.57.32-.38.49-1.01.49-1.87v-3.52h1.01v6.69h-.84l-.15-.9h-.05c-.21.33-.5.58-.86.76-.37.17-.79.26-1.26.26-.81,0-1.42-.19-1.83-.58-.41-.39-.61-1-.61-1.86v-4.38h1.03Z"/> <path d="M88.11,29.34c0-.23.06-.4.17-.51s.26-.16.43-.16.3.05.42.17c.12.11.18.28.18.51s-.06.4-.18.51c-.12.11-.26.17-.42.17-.17,0-.31-.06-.43-.17-.11-.11-.17-.28-.17-.51ZM89.21,37.84h-1.01v-6.69h1.01v6.69Z"/> <path d="M93.52,37.13c.18,0,.35-.01.52-.04.17-.03.3-.05.4-.08v.78c-.11.05-.27.1-.49.13-.21.03-.41.05-.58.05-1.29,0-1.94-.68-1.94-2.04v-3.98h-.96v-.49l.96-.42.43-1.43h.59v1.55h1.94v.79h-1.94v3.94c0,.4.1.71.29.93.19.21.45.32.79.32Z"/> <path d="M95.02,31.15h1.09l1.46,3.81c.32.87.52,1.5.6,1.89h.05c.05-.21.16-.56.33-1.07s.72-2.05,1.66-4.64h1.09l-2.87,7.62c-.29.75-.62,1.29-1,1.6-.38.31-.85.47-1.4.47-.31,0-.61-.03-.92-.1v-.81c.22.05.47.07.75.07.7,0,1.19-.39,1.49-1.17l.37-.95-2.7-6.73Z"/> <path d="M109.43,37.84l-.2-.95h-.05c-.33.42-.67.7-1,.85-.33.15-.75.22-1.24.22-.66,0-1.18-.17-1.56-.51s-.56-.83-.56-1.46c0-1.35,1.08-2.06,3.24-2.12l1.14-.04v-.42c0-.53-.11-.91-.34-1.16-.23-.25-.59-.38-1.08-.38-.56,0-1.19.17-1.89.51l-.31-.78c.33-.18.69-.32,1.08-.42s.79-.15,1.18-.15c.8,0,1.39.18,1.77.53.38.35.58.92.58,1.7v4.57h-.75ZM107.14,37.13c.63,0,1.13-.17,1.49-.52.36-.35.54-.83.54-1.45v-.6l-1.01.04c-.81.03-1.39.15-1.74.38-.36.22-.53.57-.53,1.04,0,.37.11.64.33.84s.53.29.93.29Z"/> <path d="M116.84,37.84v-4.33c0-.55-.12-.95-.37-1.22-.25-.27-.64-.4-1.17-.4-.7,0-1.21.19-1.54.57-.33.38-.49,1-.49,1.87v3.51h-1.01v-6.69h.82l.16.92h.05c.21-.33.5-.58.87-.77.37-.18.79-.27,1.25-.27.81,0,1.41.19,1.82.58s.61,1.01.61,1.86v4.36h-1.01Z"/> <path d="M124.49,36.94h-.06c-.47.68-1.17,1.02-2.1,1.02-.87,0-1.56-.3-2.04-.9-.49-.6-.73-1.45-.73-2.55s.24-1.96.73-2.57c.49-.61,1.17-.92,2.04-.92s1.6.33,2.09.99h.08l-.04-.48-.02-.47v-2.72h1.01v9.5h-.82l-.13-.9ZM122.47,37.11c.69,0,1.19-.19,1.5-.56.31-.38.47-.98.47-1.82v-.21c0-.95-.16-1.62-.47-2.03-.32-.41-.82-.61-1.51-.61-.59,0-1.05.23-1.36.69s-.47,1.11-.47,1.96.16,1.5.47,1.94c.31.43.77.65,1.38.65Z"/> <path d="M133.75,37.84h-1.04v-8h-2.83v-.92h6.69v.92h-2.83v8Z"/> <path d="M137.68,29.34c0-.23.06-.4.17-.51s.26-.16.43-.16.3.05.42.17c.12.11.18.28.18.51s-.06.4-.18.51c-.12.11-.26.17-.42.17-.17,0-.31-.06-.43-.17-.11-.11-.17-.28-.17-.51ZM138.77,37.84h-1.01v-6.69h1.01v6.69Z"/> <path d="M143.08,37.13c.18,0,.35-.01.52-.04.17-.03.3-.05.4-.08v.78c-.11.05-.27.1-.49.13-.21.03-.41.05-.58.05-1.29,0-1.94-.68-1.94-2.04v-3.98h-.96v-.49l.96-.42.43-1.43h.59v1.55h1.94v.79h-1.94v3.94c0,.4.1.71.29.93.19.21.45.32.79.32Z"/> <path d="M146.35,37.84h-1.01v-9.5h1.01v9.5Z"/> <path d="M151.26,37.96c-.99,0-1.77-.3-2.34-.9-.57-.6-.86-1.44-.86-2.51s.27-1.93.8-2.57c.53-.63,1.24-.95,2.14-.95.84,0,1.5.28,1.99.83s.73,1.28.73,2.18v.64h-4.61c.02.79.22,1.38.59,1.79.38.41.91.61,1.59.61.72,0,1.43-.15,2.14-.45v.9c-.36.16-.7.27-1.02.33s-.71.1-1.16.1ZM150.99,31.88c-.54,0-.97.17-1.28.52-.32.35-.51.83-.56,1.45h3.5c0-.64-.14-1.13-.43-1.47s-.69-.51-1.22-.51Z"/> <path d="M158.85,37.84v-8.92h1.04v8.92h-1.04Z"/> <path d="M168.27,37.84h-1.18l-2.4-3.92-2.44,3.92h-1.1l2.97-4.66-2.77-4.26h1.15l2.22,3.53,2.23-3.53h1.1l-2.77,4.22,2.98,4.7Z"/> </g></svg>
+    <a href="mailto:institutionalequity@cmu.edu">institutionalequity@cmu.edu</a> · (412) 268-7125</div>
   <div class="hint">scroll ↔ ↕ or drag to wander<br>click a plane to unfold it</div>
 </div>
 
 <div class="masthead">
-  <h1>Helping you land in the right place.</h1>
-  <p>CMU IEX is here to answer your questions, no matter how sure or unsure you feel about them. Ask and we will answer.</p>
+  <div class="mh-main">
+    <p class="mh-lede">CMU IEX is here to answer your questions, no matter how sure or unsure you feel about them. Ask and we will answer.</p>
+    <h1>Dear IEX, I want to <span class="keep">know <span class="blank" aria-hidden="true">______</span></span><span class="sr">…</span></h1>
+  </div>
+  <p class="mh-about">IEX is CMU’s Office for Institutional Equity and Title IX. The office handles concerns about discrimination and sexual misconduct, answers questions, connects you to support, and helps you figure out all of the different paths you can take.</p>
+  <p class="mh-close">Whatever you choose,<br><strong>IEX is here to help you land in the right place.</strong></p>
   <div class="loading" id="loading">folding…</div>
 </div>
+<!-- the sky frame's deckled edge: the page's paper biting a couple of px,
+     unevenly, into the frame's straight edges (drawn by garden.js; it fades
+     away as the frame opens) -->
+<svg id="deckle" aria-hidden="true" focusable="false">
+  <defs>
+    <pattern id="deckle-paper" patternUnits="userSpaceOnUse" width="400" height="400"><image id="deckle-img" width="400" height="400"/></pattern>
+    <filter id="deckle-soft" x="0" y="0" width="100%" height="100%"><feGaussianBlur stdDeviation="0.45"/></filter>
+  </defs>
+  <path id="deckle-path" fill="url(#deckle-paper)" fill-rule="evenodd" filter="url(#deckle-soft)"/>
+</svg>
 <div class="layout-grid" id="layout-grid" hidden></div>
 <script>if (/[?&]grid\b/.test(location.search)) document.getElementById('layout-grid').hidden = false;</script>
+<script>
+  /* the white band (--T) is as tall as the words above the frame need, plus a
+     14 px gap (at 1440 wide that's the layout's ~176 px) */
+  (function () {
+    var m = document.querySelector('.masthead');
+    function fit() {
+      var main = m.querySelector('.mh-main'), b = 0;
+      [main, m.querySelector('.mh-about'), m.querySelector('.mh-close')].forEach(function (el) {
+        if (el && el.offsetParent !== null) b = Math.max(b, el.offsetTop + el.offsetHeight);
+      });
+      document.documentElement.style.setProperty('--T', Math.round(m.offsetTop + b + 14) + 'px');
+    }
+    fit(); window.addEventListener('resize', fit);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+    if (document.fonts) document.fonts.addEventListener && document.fonts.addEventListener('loadingdone', fit);
+  })();
+</script>
 <div class="peek" id="peek" aria-hidden="true"><span class="peek-q"></span><span class="peek-cue">unfold</span></div>
 <div class="focus-ring" id="ring"></div>
 
@@ -281,6 +332,50 @@
 <script>
   /* the paper tile for .paper-top: mid-grey (soft-light's "no change") with
      mottling, fibres and tooth around it */
+  /* the page's own paper: off-white, with mottling, fibres, a fine laid
+     grain and tooth — there when you look, never loud. The tile is also
+     the deckled frame edge's fill (window.__qfPaper). */
+  (function () {
+    var N = 400, cv = document.createElement('canvas'); cv.width = cv.height = N;
+    var c = cv.getContext('2d'), seed = 23;
+    function rnd() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+    c.fillStyle = '#FEFDF9'; c.fillRect(0, 0, N, N);
+    /* mottling: soft cloudy unevenness in the pulp */
+    for (var k = 0; k < 60; k++) {
+      var x = rnd() * N, y = rnd() * N, r = 30 + rnd() * 120, dark = rnd() < 0.55;
+      for (var ox = -N; ox <= N; ox += N) for (var oy = -N; oy <= N; oy += N) {
+        var g = c.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+        g.addColorStop(0, dark ? 'rgba(140,118,88,' + (0.03 + rnd() * 0.025) + ')' : 'rgba(255,255,255,' + (0.12 + rnd() * 0.08) + ')');
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        c.fillStyle = g; c.fillRect(x + ox - r, y + oy - r, 2 * r, 2 * r);
+      }
+    }
+    /* a fine laid grain: faint, slightly wavering lines both ways */
+    for (var ly = 0; ly < N; ly += 3) {
+      c.strokeStyle = 'rgba(120,100,75,' + (0.01 + rnd() * 0.018) + ')'; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(0, ly + 0.5); for (var lx = 0; lx <= N; lx += 25) c.lineTo(lx, ly + 0.5 + (rnd() - 0.5) * 0.8); c.stroke();
+    }
+    for (var vx = 0; vx < N; vx += 4) {
+      c.strokeStyle = 'rgba(255,255,255,' + (0.05 + rnd() * 0.07) + ')'; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(vx + 0.5, 0); for (var vy = 0; vy <= N; vy += 25) c.lineTo(vx + 0.5 + (rnd() - 0.5) * 0.8, vy); c.stroke();
+    }
+    /* fibres */
+    for (var f = 0; f < 420; f++) {
+      var fx = rnd() * N, fy = rnd() * N, L = 3 + rnd() * 14, ang = rnd() * Math.PI * 2;
+      c.strokeStyle = rnd() < 0.55 ? 'rgba(255,255,255,' + (0.5 + rnd() * 0.4) + ')' : 'rgba(130,108,80,' + (0.08 + rnd() * 0.1) + ')';
+      c.lineWidth = 0.4 + rnd() * 0.5;
+      c.beginPath(); c.moveTo(fx, fy);
+      c.quadraticCurveTo(fx + Math.cos(ang) * L / 2 + (rnd() - 0.5) * 3, fy + Math.sin(ang) * L / 2 + (rnd() - 0.5) * 3, fx + Math.cos(ang) * L, fy + Math.sin(ang) * L);
+      c.stroke();
+    }
+    /* tooth */
+    var im = c.getImageData(0, 0, N, N), d = im.data;
+    for (var i = 0; i < d.length; i += 4) { var n = (rnd() - 0.56) * 12; d[i] += n; d[i + 1] += n; d[i + 2] += n * 0.9; }
+    c.putImageData(im, 0, 0);
+    var url = cv.toDataURL('image/png');
+    window.__qfPaper = url;
+    document.documentElement.style.backgroundImage = document.body.style.backgroundImage = 'url(' + url + ')';
+  })();
   (function () {
     var N = 512, cv = document.createElement('canvas'); cv.width = cv.height = N;
     var c = cv.getContext('2d'), seed = 7;
